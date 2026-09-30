@@ -13,14 +13,16 @@ import {
 import {
 	getAuthInputCss,
 	hoverMq,
-	layoutMaxWidths,
 	pageGutter,
 } from '#universal/styles/style-primitives.ts'
 import { type IconName } from '#universal/icon.tsx'
+import { getPageShellCss, pageBlockPadding } from '#client/page-layout.ts'
 import {
 	AccountManagementLinkNav,
 	accountManagementNarrowMq,
 } from './account-management-link-nav.tsx'
+
+type CssObject = Parameters<typeof css>[0]
 
 export {
 	AccountManagementInlineLinkNav,
@@ -167,6 +169,27 @@ type AccountManagementShellProps = {
 /** Prototype `.account` section rhythm: margin between blocks in the content column. */
 const accountSectionGap = 'clamp(2rem, 4vw, 2.75rem)'
 
+/** One rail link (0.5rem padding × 2, a 0.98rem line, the 0.15rem gap). */
+const accountRailLinkBlock = '2.6rem'
+const accountRailMaxLinks = 16
+
+/**
+ * The absolute rail adds no height, so a page shorter than its rail (Activity
+ * with no runs) would scroll the last links out of view. The floor is sized
+ * to the links actually rendered — never the fixed height that left a blank
+ * band under the three-link console rail — and only applies while the rail
+ * is beside the content.
+ */
+const accountRailFloors: CssObject = {}
+for (let links = 1; links <= accountRailMaxLinks; links++) {
+	accountRailFloors[
+		`&:has(> [data-account-nav] a:nth-child(${links}):last-child)`
+	] = {
+		minHeight: `calc(${links} * ${accountRailLinkBlock} + ${pageBlockPadding.top})`,
+	}
+}
+const accountRailFloorCss = { '@media (width > 860px)': accountRailFloors }
+
 export function AccountManagementShell(
 	handle: Handle<AccountManagementShellProps>,
 ) {
@@ -175,40 +198,29 @@ export function AccountManagementShell(
 			data-account-shell
 			aria-busy={handle.props.busy ? 'true' : undefined}
 			mix={css({
-				maxWidth: layoutMaxWidths.extended,
-				margin: '0 auto',
-				// Prototype `.account` padding. The inline gutter is the one every
-				// other page container carries, so the content column lines up
-				// with the header's 72rem content box instead of running wider
-				// than the nav above it; the bottom clamp keeps the last section
-				// off the footer hairline. `<main>`'s generic padding is zeroed
-				// for this shell in public/styles.css so the two don't stack.
-				padding: `clamp(2rem, 5vw, 3.5rem) ${pageGutter} clamp(3rem, 7vw, 5rem)`,
-				boxSizing: 'border-box' as const,
+				// The shared page box (width, gutter, vertical rhythm), so the
+				// rail and content column line up with the header brand on every
+				// account and console page regardless of how much each renders.
+				...getPageShellCss('app'),
 				display: 'grid',
 				gap: spacing.xl,
 				alignItems: 'start',
-				// Prototype `.account` layout: 200px sticky nav rail beside the
-				// content column, 72rem total. The rail is an absolutely
-				// positioned full-height track (so the content keeps its normal
-				// single-column flow and gap) and only exists when the section
-				// nav is present — nav-less shell users (onboarding, pending
-				// verification) keep the plain column. The rail starts at the
-				// gutter so it lines up with the header's brand. Note: `css()` classes
-				// each live in their own cascade sub-layer, so child spacing
-				// must stay on the shell's `gap`, never on per-child margins a
-				// child's own class would silently beat.
+				// Prototype `.account` layout: 200px rail beside the content
+				// column, 72rem total. The rail is absolutely positioned in a
+				// left track and only exists when the section nav is present —
+				// nav-less shell users (onboarding, pending verification) keep
+				// the plain column. The rail starts at the gutter so it lines
+				// up with the header's brand. Its box is the shell (top and
+				// bottom), floored at the rail's own height, and the link
+				// column scrolls inside that box on a short viewport. Note:
+				// `css()` classes each live in their own cascade sub-layer, so
+				// child spacing must stay on the shell's `gap`, never on
+				// per-child margins a child's own class would silently beat.
+				...accountRailFloorCss,
 				'&:has(> [data-account-nav])': {
 					position: 'relative',
 					gap: accountSectionGap,
 					paddingLeft: `calc(${pageGutter} + 200px + clamp(2rem, 5vw, 4.5rem))`,
-					// The absolute rail contributes no height; keep room so a
-					// short page never lets the nav spill over the footer.
-					minHeight: '40rem',
-					// …and keep that reserved height out of the rows. `align-content`
-					// defaults to `stretch`, which hands the leftover space to the
-					// auto-sized tracks, so a page shorter than the floor grew a gap
-					// between every section instead of ending early.
 					alignContent: 'start',
 					...(handle.props.maxWidth
 						? {
@@ -219,7 +231,6 @@ export function AccountManagementShell(
 						: {}),
 					[accountManagementNarrowMq]: {
 						paddingLeft: pageGutter,
-						minHeight: 0,
 						gap: spacing.xl,
 					},
 				},
