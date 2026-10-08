@@ -126,16 +126,16 @@ export function AccountPackages(
 							{preview.readme.slice(0, 4000)}
 							{preview.readme.length > 4000 ? '\n…' : ''}
 						</pre>
-						<details>
-							<summary>Files ({preview.fileList.length})</summary>
-							<ul>
-								{preview.fileList.map((path) => (
-									<li key={path}>
-										<Code>{path}</Code>
-									</li>
-								))}
-							</ul>
-						</details>
+						<Lede>
+							<a href={preview.browseHref}>
+								Browse files ({preview.fileList.length})
+							</a>
+							<Muted small>
+								{' '}
+								— tree, highlighted code and rendered Markdown before you
+								install.
+							</Muted>
+						</Lede>
 						<StackedForm action={action}>
 							<CsrfInput token={d.csrf} />
 							<Hidden

@@ -10,11 +10,14 @@ import {
 	fetchPackageSource,
 	packageSourceHostsFromEnv,
 	parsePackageSource,
+	packagePreviewFromFetched,
 	previewPackageSource,
 	type PackagePreview,
 } from '../packages/install.ts'
 import { parsePackageManifest } from '../packages/manifest.ts'
+import { decodePreviewSource, encodePreviewSource } from '../packages/preview-source.ts'
 import { renderPage } from '#app/render.tsx'
+import { inProcessHighlightEnv, loadPackageFilesData } from '#app/package-files-data.ts'
 import { type AppLoaderData, type PageFlash } from '#universal/loader-data.ts'
 import { routes } from '#universal/routes.ts'
 import { accountAliasLocation } from './account-aliases.ts'
@@ -176,6 +179,19 @@ export async function handleAccount(request: Request, env: Env, url: URL): Promi
 				bytes: new TextEncoder().encode(content).byteLength,
 			}))
 			.sort((a, b) => a.path.localeCompare(b.path))
+		// kody: the package page is its files view (tree + README at the root).
+		const explorer = await loadPackageFilesData({
+			env: inProcessHighlightEnv(),
+			files: pkg.files,
+			selectedPath: '',
+			title: pkg.name,
+			backHref: routes.accountPackages.href(),
+			backLabel: 'Packages',
+			filesBasePath: routes.accountPackageFiles.href({ name: pkg.name }),
+		})
+		if (!explorer) {
+			throw new KodyError('package_file_not_found', 'Package file was not found.', { status: 404 })
+		}
 		return view(session, {
 			title: pkg.name,
 			current: url.pathname,
@@ -184,6 +200,7 @@ export async function handleAccount(request: Request, env: Env, url: URL): Promi
 				page: 'accountPackageDetail',
 				csrf: session.csrf,
 				error,
+				files: explorer,
 				pkg: {
 					name: pkg.name,
 					version: pkg.version,
@@ -226,6 +243,48 @@ export async function handleAccount(request: Request, env: Env, url: URL): Promi
 		})
 	}
 
+	if (detailPath?.kind === 'packagePreviewFiles') {
+		if (post) return redirect(url.pathname)
+		const ref = decodePreviewSource(detailPath.source)
+		const fetched = await fetchPackageSource(parsePackageSource(ref.source, ref.subdir), {
+			allowedHosts: packageSourceHostsFromEnv(env),
+		})
+		const preview = packagePreviewFromFetched(fetched)
+		const files = await loadPackageFilesData({
+			env: inProcessHighlightEnv(),
+			files: fetched.files,
+			selectedPath: detailPath.relativePath ?? '',
+			title: preview.name,
+			backHref: routes.accountPackages.href(),
+			backLabel: 'Packages',
+			filesBasePath: routes.accountPackagePreviewFiles.href({ source: detailPath.source }),
+		})
+		if (!files) {
+			throw new KodyError('package_file_not_found', 'Package file was not found.', { status: 404 })
+		}
+		return view(session, {
+			title: `Preview ${preview.name}`,
+			current: url.pathname,
+			flash,
+			data: {
+				page: 'accountPackagePreviewFiles',
+				csrf: session.csrf,
+				files,
+				preview: {
+					source: ref.source,
+					subdir: ref.subdir ?? '',
+					fetchedFrom: preview.fetchedFrom,
+					commit: preview.commit,
+					name: preview.name,
+					version: preview.version,
+					description: preview.description,
+					warnings: preview.warnings,
+					permissions: preview.permissions,
+				},
+			},
+		})
+	}
+
 	if (detailPath?.kind === 'packageFiles') {
 		const pkg = await userCell.packageGet(detailPath.name)
 		if (!pkg) {
@@ -233,42 +292,24 @@ export async function handleAccount(request: Request, env: Env, url: URL): Promi
 				status: 404,
 			})
 		}
-		let selected: { path: string; content: string; truncated: boolean } | null = null
-		if (detailPath.relativePath !== null) {
-			const content = pkg.files[detailPath.relativePath]
-			if (content === undefined) {
-				throw new KodyError('package_file_not_found', 'Package file was not found.', {
-					status: 404,
-				})
-			}
-			selected = {
-				path: detailPath.relativePath,
-				content: content.slice(0, 200_000),
-				truncated: content.length > 200_000,
-			}
-		}
-		const files = Object.entries(pkg.files)
-			.map(([path, content]) => ({
-				path,
-				bytes: new TextEncoder().encode(content).byteLength,
-			}))
-			.sort((a, b) => a.path.localeCompare(b.path))
-		const filesHref = routes.accountPackageFiles.href({
-			name: detailPath.name,
-			...(detailPath.relativePath === null ? {} : { relativePath: detailPath.relativePath }),
+		if (post) return redirect(url.pathname)
+		const files = await loadPackageFilesData({
+			env: inProcessHighlightEnv(),
+			files: pkg.files,
+			selectedPath: detailPath.relativePath ?? '',
+			title: pkg.name,
+			backHref: routes.accountPackageDetail.href({ name: pkg.name }),
+			backLabel: pkg.name,
+			filesBasePath: routes.accountPackageFiles.href({ name: pkg.name }),
 		})
-		if (post) return redirect(filesHref)
+		if (!files) {
+			throw new KodyError('package_file_not_found', 'Package file was not found.', { status: 404 })
+		}
 		return view(session, {
 			title: `${pkg.name} files`,
 			current: url.pathname,
 			flash,
-			data: {
-				page: 'accountPackageFiles',
-				name: pkg.name,
-				version: pkg.version,
-				files,
-				selected,
-			},
+			data: { page: 'accountPackageFiles', files },
 		})
 	}
 
@@ -574,6 +615,9 @@ export async function handleAccount(request: Request, env: Env, url: URL): Promi
 								fileList: preview.fileList,
 								permissions: preview.permissions,
 								warnings: preview.warnings,
+								browseHref: routes.accountPackagePreviewFiles.href({
+									source: encodePreviewSource({ source: form.source ?? preview.source, subdir: form.subdir || null }),
+								}),
 							}
 						: null,
 					packages: packages.map((pkg) => {

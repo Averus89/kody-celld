@@ -1,3 +1,6 @@
+import { type HighlightedCode } from '#universal/highlighted-code.ts'
+import { type PackageFilesContentKind } from '#universal/package-file-media.ts'
+
 /**
  * Page payloads the Worker renders and the browser hydrates. Everything here
  * must be plain JSON: it is serialized into the document for `clientEntry`
@@ -246,6 +249,61 @@ export type PasswordFormView = {
 	minLength: number
 }
 
+type PackageFilesChildLoaderData = {
+	name: string
+	path: string
+	kind: 'file' | 'directory'
+}
+
+/** Ported from kody's loader-data.ts — the shape `client/package-files-explorer.tsx` renders. */
+export type PackageFilesLoaderData = {
+	ok: true
+	title: string
+	backHref: string
+	backLabel: string
+	filesBasePath: string
+	selectedPath: string
+	kind: 'file' | 'directory'
+	paths: Array<string>
+	children: Array<PackageFilesChildLoaderData>
+	content: string | null
+	contentPath: string | null
+	contentKind: PackageFilesContentKind | null
+	language: string | null
+	contentByteLength?: number | null
+	mediaHref?: string | null
+	contentHighlighted?: HighlightedCode | null
+	contentFences?: Array<HighlightedCode>
+	username?: string
+	kodyId?: string
+	viewerIsOwner?: boolean
+	isPrivate?: boolean
+	isListed?: boolean
+	iconUrl?: string | null
+	imageBaseHref?: string | null
+	description?: string
+	/** True when `/@owner` is publicly reachable. Omit to keep the owner link. */
+	ownerProfilePublic?: boolean
+}
+
+export type PackagePreviewSummary = {
+	source: string
+	subdir: string
+	fetchedFrom: string
+	commit: string | null
+	name: string
+	version: string
+	description: string
+	warnings: Array<string>
+	permissions: {
+		jobs: Array<string>
+		webhooks: Array<string>
+		subscriptions: Array<string>
+		secretProvider: string | null
+		dependencies: Array<string>
+	}
+}
+
 export type AppLoaderData =
 	| {
 			page: 'login'
@@ -317,20 +375,25 @@ export type AppLoaderData =
 					dependencies: Array<string>
 				}
 				warnings: Array<string>
+				browseHref: string
 			} | null
 	  }
 	| {
 			page: 'accountPackageDetail'
 			csrf: string
 			pkg: PackageDetailView
+			files: PackageFilesLoaderData
 			error: string | null
 	  }
 	| {
 			page: 'accountPackageFiles'
-			name: string
-			version: string
-			files: Array<{ path: string; bytes: number }>
-			selected: { path: string; content: string; truncated: boolean } | null
+			files: PackageFilesLoaderData
+	  }
+	| {
+			page: 'accountPackagePreviewFiles'
+			csrf: string
+			preview: PackagePreviewSummary
+			files: PackageFilesLoaderData
 	  }
 	| { page: 'accountJobs'; csrf: string; jobs: Array<JobView> }
 	| {

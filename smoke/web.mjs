@@ -315,6 +315,41 @@ export async function smokeWeb({ user, mcp }) {
 		'install form surfaces the refusal',
 		refused.status,
 	)
+	if (process.env.SMOKE_OFFLINE !== '1') {
+		// Preview opens kody's files explorer on a remote source before install.
+		const previewed = await browser.post('/account/packages', {
+			action: 'preview',
+			source: 'github:kentcdodds/kody-celld/examples/packages/http-probe#main',
+			csrf,
+		})
+		const browse = /href="(\/account\/package-preview\/[A-Za-z0-9_-]+\/files)"/.exec(previewed.text)?.[1]
+		assert(previewed.status === 200 && browse, 'package preview links to the files explorer', previewed.status)
+		const previewRoot = await browser.get(browse)
+		assert(
+			previewRoot.status === 200 && previewRoot.text.includes('data-testid="package-files-markdown"'),
+			'preview explorer opens on the README',
+			previewRoot.status,
+		)
+		const previewProbe = await browser.get(`${browse}/probe.js`)
+		assert(
+			previewProbe.status === 200 &&
+				previewProbe.text.includes('data-testid="package-files-code"') &&
+				previewProbe.text.includes('--shiki-dark') &&
+				previewProbe.text.includes('name="action" value="install"'),
+			'preview explorer highlights a remote file and offers install',
+			previewProbe.status,
+		)
+	}
+	const junkPreview = await browser.get('/account/package-preview/not*base64/files')
+	assert(junkPreview.status === 400, 'undecodable preview link is a 400', junkPreview.status)
+	const privatePreview = await browser.get(
+		`/account/package-preview/${Buffer.from(JSON.stringify(['https://10.0.0.7/pkg.tgz'])).toString('base64url')}/files`,
+	)
+	assert(
+		privatePreview.status >= 400 && privatePreview.text.includes('private host'),
+		'preview explorer refuses private hosts',
+		privatePreview.status,
+	)
 	const pkgName = `@kody-smoke/web-${randomBytes(3).toString('hex')}`
 	await mcp.call('packageSave', {
 		files: {
@@ -350,16 +385,34 @@ export async function smokeWeb({ user, mcp }) {
 			packageDetail.text.includes(pkgName) &&
 			packageDetail.text.includes('web smoke') &&
 			packageDetail.text.includes(jobHref) &&
-			packageDetail.text.includes(`${packageHref}/files/lib/util.js`),
-		'package detail links its job and nested files',
+			packageDetail.text.includes('data-testid="package-files"') &&
+			packageDetail.text.includes('data-testid="package-files-markdown"') &&
+			packageDetail.text.includes(`href="${packageHref}/files/lib"`),
+		'package detail links its job and shows the files explorer with the README',
 		packageDetail.status,
+	)
+	const filesRoot = await browser.get(`${packageHref}/files`)
+	assert(
+		filesRoot.status === 200 &&
+			filesRoot.text.includes('data-testid="package-files"') &&
+			filesRoot.text.includes('data-testid="package-files-markdown"') &&
+			filesRoot.text.includes(`href="${packageHref}/files/lib"`),
+		'package files root shows the tree and the rendered README',
+		filesRoot.status,
 	)
 	const filePage = await browser.get(`${packageHref}/files/lib/util.js`)
 	assert(
-		filePage.status === 200 && filePage.text.includes('nestedFile = "web smoke file"'),
-		'nested package file page shows selected content',
+		filePage.status === 200 &&
+			filePage.text.includes('data-testid="package-files-code"') &&
+			filePage.text.includes('class="shiki shiki-themes github-light github-dark"') &&
+			filePage.text.includes('--shiki-dark'),
+		'nested package file page shows Shiki-highlighted content',
 		filePage.status,
 	)
+	for (const bad of ['nope.js', '..%2Fpackage.json', 'constructor']) {
+		const missing = await browser.get(`${packageHref}/files/${bad}`)
+		assert(missing.status === 404, `package files 404 for ${bad}`, missing.status)
+	}
 	const jobPage = await browser.get(jobHref)
 	assert(
 		jobPage.status === 200 &&

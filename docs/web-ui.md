@@ -68,20 +68,20 @@ Accounts are created by the operator — there is no open registration:
 
 ## Account pages (`/account`)
 
-| Page             | You can                                                                                                                                                                                                       |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Overview         | see today's usage vs quotas, change your password                                                                                                                                                             |
-| MCP clients      | see every OAuth client you authorized (name, scope, last use), revoke one or all                                                                                                                              |
-| API tokens       | list (label, created, last used — never the value), create (value shown **once**), revoke                                                                                                                     |
-| Secrets          | list names + approved hosts, add/replace a value (paste form; the value is never rendered again), delete                                                                                                      |
-| Packages         | list saved packages with exports/jobs/webhooks/source; open details (`/account/packages/:name`) and files (`/account/packages/:name/files/*`); preview then install/fork; publish / unpublish; delete package |
-| Jobs             | list schedules, last run, enable/disable; details and runs (`/account/jobs/:jobId`)                                                                                                                           |
-| Activity         | recent run history (status, duration, error names — never secret values)                                                                                                                                      |
-| Webhooks         | every webhook your packages declare: handle, package, status, last delivery (never the URL)                                                                                                                   |
-| Integrations     | connected OAuth integrations and their status, disconnect                                                                                                                                                     |
-| Email            | email inboxes and recent messages                                                                                                                                                                             |
-| Memories         | browse and search your memories, open one, soft-delete or delete permanently                                                                                                                                  |
-| Browser sessions | list and revoke (this one or all others)                                                                                                                                                                      |
+| Page             | You can                                                                                                                                                                                                                                                                         |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Overview         | see today's usage vs quotas, change your password                                                                                                                                                                                                                               |
+| MCP clients      | see every OAuth client you authorized (name, scope, last use), revoke one or all                                                                                                                                                                                                |
+| API tokens       | list (label, created, last used — never the value), create (value shown **once**), revoke                                                                                                                                                                                       |
+| Secrets          | list names + approved hosts, add/replace a value (paste form; the value is never rendered again), delete                                                                                                                                                                        |
+| Packages         | list saved packages with exports/jobs/webhooks/source; open details (`/account/packages/:name`, which opens on the files explorer at the package root, like kody) and files (`/account/packages/:name/files/*`); preview then install/fork; publish / unpublish; delete package |
+| Jobs             | list schedules, last run, enable/disable; details and runs (`/account/jobs/:jobId`)                                                                                                                                                                                             |
+| Activity         | recent run history (status, duration, error names — never secret values)                                                                                                                                                                                                        |
+| Webhooks         | every webhook your packages declare: handle, package, status, last delivery (never the URL)                                                                                                                                                                                     |
+| Integrations     | connected OAuth integrations and their status, disconnect                                                                                                                                                                                                                       |
+| Email            | email inboxes and recent messages                                                                                                                                                                                                                                               |
+| Memories         | browse and search your memories, open one, soft-delete or delete permanently                                                                                                                                                                                                    |
+| Browser sessions | list and revoke (this one or all others)                                                                                                                                                                                                                                        |
 
 Email, Activity and MCP clients live at `/account/inbox`, `/account/runs` and `/account/clients`; the hosted product's paths for them (`/account/email`, `/account/activity`, `/account/mcp-oauth-clients`) redirect there.
 
@@ -231,6 +231,14 @@ heading and the header brand should not move.
    from `client/entry.tsx`; do not move form handling into the client.
 5. Run `npm run validate`, `npm run dev` + `node smoke/run.mjs --only web`
    (and `oauth-server`, `community` when touching those pages).
+
+The package files explorer is a port of kody's
+(`client/package-files-explorer.tsx` + `markdown-view`, `syntax-highlight`,
+`src/app/highlight-code.ts`, `packages/highlight-worker`) at
+kentcdodds/kody@2bfeb29. kody reaches Shiki through the `HIGHLIGHT` service
+binding; here `src/highlight/binding.ts` runs the same handler in-process.
+Differences are marked `// kody-celld:` (no community repo chrome, no media
+or raw routes — media-named files show as text).
 
 Not ported on purpose: kody's client-side router / no-flash navigation, the
 landing page and marketing sections, Cloudflare Turnstile, OG image rendering.

@@ -1,13 +1,17 @@
 import { css, type Handle } from 'remix/component'
+import { PackageFilesExplorerIsland } from '#client/package-files-explorer-island.tsx'
 import { type AppLoaderData } from '#universal/loader-data.ts'
 import { routes } from '#universal/routes.ts'
-import { mutedLinkCss } from '#universal/styles/style-primitives.ts'
-import { colors, spacing } from '#universal/styles/tokens.ts'
+import {
+	layoutMaxWidths,
+	mutedLinkCss,
+	pageGutter,
+} from '#universal/styles/style-primitives.ts'
+import { colors, spacing, typography } from '#universal/styles/tokens.ts'
 import {
 	AccountManagementMessage,
 	AccountManagementPanel,
-	AccountManagementShell,
-	AccountPageHeader,
+	AccountManagementHeader,
 	MetadataGrid,
 	TimestampValue,
 } from './account-management-components.tsx'
@@ -28,16 +32,20 @@ export function AccountPackageDetail(
 	handle: Handle<{ data: Data; pathname: string }>,
 ) {
 	return () => {
-		const { data, pathname } = handle.props
+		const { data } = handle.props
 		const { pkg } = data
 		const detailHref = routes.accountPackageDetail.href({ name: pkg.name })
 
 		return (
-			<AccountManagementShell>
-				<AccountPageHeader
+			// kody: a package page is its files view, full width with no account
+			// rail (same frame as /files); details follow below the explorer.
+			<section mix={css(pageCss)}>
+				<a href={routes.accountPackages.href()} mix={css(backLinkCss)}>
+					<span aria-hidden="true">←</span> Packages
+				</a>
+				<AccountManagementHeader
 					title={pkg.name}
 					description={pkg.description ?? 'Saved package details.'}
-					currentHref={pathname}
 					actions={
 						<Actions>
 							<ActionForm
@@ -87,7 +95,6 @@ export function AccountPackageDetail(
 						{data.error}
 					</AccountManagementMessage>
 				) : null}
-				<a href={routes.accountPackages.href()}>Back to packages</a>
 				<AccountManagementPanel ariaLabel="Package">
 					<MetadataGrid
 						items={[
@@ -116,6 +123,8 @@ export function AccountPackageDetail(
 					/>
 					{pkg.description ? null : <Lede>No description.</Lede>}
 				</AccountManagementPanel>
+				{/* kody: a package's page opens on its files (tree + README). */}
+				<PackageFilesExplorerIsland data={data.files} embedded />
 				<AccountManagementPanel title="Exports">
 					<RecordTable
 						mode="none"
@@ -216,32 +225,31 @@ export function AccountPackageDetail(
 						/>
 					</AccountManagementPanel>
 				) : null}
-				<AccountManagementPanel title="Files">
-					<ul
-						mix={css({
-							margin: 0,
-							paddingLeft: '1.2rem',
-							display: 'grid',
-							gap: spacing.xs,
-							color: colors.text,
-						})}
-					>
-						{pkg.files.map((file) => (
-							<li key={file.path}>
-								<a
-									href={routes.accountPackageFiles.href({
-										name: pkg.name,
-										relativePath: file.path,
-									})}
-								>
-									<Code>{file.path}</Code>
-								</a>
-								<Muted small> {file.bytes} bytes</Muted>
-							</li>
-						))}
-					</ul>
-				</AccountManagementPanel>
-			</AccountManagementShell>
+			</section>
 		)
 	}
+}
+
+const pageCss = {
+	boxSizing: 'border-box' as const,
+	width: '100%',
+	maxWidth: layoutMaxWidths.extended,
+	marginInline: 'auto',
+	padding: `${spacing.lg} ${pageGutter} ${spacing['2xl']}`,
+	display: 'grid',
+	gap: spacing.xl,
+	alignContent: 'start',
+}
+
+// Same look as the explorer's own back link on /files.
+const backLinkCss = {
+	display: 'inline-flex',
+	alignItems: 'center',
+	gap: spacing.xs,
+	justifySelf: 'start',
+	fontSize: typography.fontSize.sm,
+	fontWeight: typography.fontWeight.medium,
+	color: colors.primaryText,
+	textDecoration: 'none',
+	'&:hover': { color: colors.text },
 }
