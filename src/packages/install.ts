@@ -22,6 +22,7 @@ export type PackageSourceEnv = {
 
 export const defaultPackageSourceHosts = [
 	'github.com',
+	'api.github.com',
 	'codeload.github.com',
 	'raw.githubusercontent.com',
 	'gist.githubusercontent.com',
@@ -230,6 +231,77 @@ export function describePackageSource(source: PackageSource) {
 	return source.subdir ? `${source.url}#${source.subdir}` : source.url
 }
 
+const fullCommitSha = /^[0-9a-f]{40}$/i
+
+/** Commit SHA embedded in a final codeload URL after GitHub resolves HEAD/branch → SHA. */
+export function commitShaFromCodeloadUrl(url: string): string | undefined {
+	try {
+		const parts = new URL(url).pathname.split('/').filter(Boolean)
+		const tar = parts.findIndex((part) => part === 'tar.gz' || part === 'legacy.tar.gz')
+		const ref = tar >= 0 ? parts[tar + 1] : undefined
+		return ref && fullCommitSha.test(ref) ? ref.toLowerCase() : undefined
+	} catch {
+		return undefined
+	}
+}
+
+/**
+ * Codeload often answers 200 for HEAD/branch without putting the SHA in the URL
+ * (root dir is `repo-ref/`). Resolve via the commits API so preview can pin Install.
+ */
+export async function resolveGithubCommitSha(
+	source: GithubSource,
+	options: { allowedHosts: Array<string>; fetch?: FetchLike | undefined },
+): Promise<string | undefined> {
+	const ref = source.ref ?? 'HEAD'
+	if (fullCommitSha.test(ref)) return ref.toLowerCase()
+	const apiUrl = `https://api.github.com/repos/${source.owner}/${source.repo}/commits/${encodeURIComponent(ref)}`
+	try {
+		assertAllowedSourceUrl(apiUrl, options.allowedHosts)
+	} catch {
+		return undefined
+	}
+	try {
+		const fetchImpl = options.fetch ?? ((input, init) => fetch(input, init))
+		const response = await fetchImpl(apiUrl, {
+			headers: {
+				accept: 'application/vnd.github.sha',
+				'user-agent': 'kody-celld/0.1 (package-install)',
+			},
+			signal: AbortSignal.timeout(packageSourceLimits.timeoutMs),
+		})
+		if (!response.ok) return undefined
+		const sha = (await response.text()).trim()
+		return fullCommitSha.test(sha) ? sha.toLowerCase() : undefined
+	} catch {
+		return undefined
+	}
+}
+
+/**
+ * Rewrite a github:/kody: source string so its ref is an immutable commit SHA.
+ * Preview links and install forms use this so Install fetches the same tree the
+ * explorer showed (HEAD may have moved). Non-git sources are returned unchanged.
+ */
+export function pinPackageSourceToCommit(sourceText: string, commit: string | null | undefined): string {
+	if (!commit || !fullCommitSha.test(commit)) return sourceText
+	const sha = commit.toLowerCase()
+	try {
+		const source = parsePackageSource(sourceText)
+		if (source.kind === 'github') {
+			if (source.ref?.toLowerCase() === sha) return describePackageSource(source)
+			return describePackageSource({ ...source, ref: sha })
+		}
+		if (source.kind === 'kody') {
+			if (source.ref?.toLowerCase() === sha) return describePackageSource(source)
+			return describePackageSource({ ...source, ref: sha })
+		}
+	} catch {
+		return sourceText
+	}
+	return sourceText
+}
+
 export function githubTarballUrl(source: GithubSource) {
 	return `https://codeload.github.com/${source.owner}/${source.repo}/tar.gz/${encodeURIComponent(source.ref ?? 'HEAD')}`
 }
@@ -418,7 +490,7 @@ export type FetchedPackage = {
 	/** Provenance string stored as the package `source`. */
 	source: string
 	fetchedFrom: string
-	/** Immutable commit SHA when the source was a git clone. */
+	/** Immutable commit SHA when the source resolved to a git commit (clone or codeload). */
 	commit?: string
 }
 
@@ -524,7 +596,19 @@ export async function fetchPackageSource(
 		}
 		result = filesFromJson(text, source.subdir)
 	}
-	return { ...result, source: describePackageSource(source), fetchedFrom: downloaded.url }
+	let commit: string | undefined
+	if (source.kind === 'github') {
+		commit =
+			commitShaFromCodeloadUrl(downloaded.url) ??
+			(source.ref && fullCommitSha.test(source.ref) ? source.ref.toLowerCase() : undefined)
+		if (!commit) commit = await resolveGithubCommitSha(source, options)
+	}
+	return {
+		...result,
+		source: describePackageSource(source),
+		fetchedFrom: downloaded.url,
+		...(commit ? { commit } : {}),
+	}
 }
 
 export async function previewPackageSource(
@@ -535,7 +619,7 @@ export async function previewPackageSource(
 	return packagePreviewFromFetched(fetched)
 }
 
-/** Max characters of one package file returned for viewing (web file viewer, packagePreview `path`). */
+/** Max characters of one package file (MCP `packagePreview` path, web explorer display). */
 export const packageFileViewMaxChars = 200_000
 
 export type PackageFileView = { path: string; bytes: number; content: string; truncated: boolean }
