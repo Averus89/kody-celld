@@ -55,6 +55,187 @@ describe('parsePackageManifest', () => {
 	})
 })
 
+describe('parsePackageManifest relative imports', () => {
+	const withFiles = (files: Record<string, string>) => ({
+		'package.json': JSON.stringify({ name: '@scope/pkg', version: '1.0.0', exports: './index.js' }),
+		'README.md': '# pkg',
+		'AGENTS.md': 'Use it.',
+		...files,
+	})
+
+	it('accepts imports that resolve the way the module graph resolves them', () => {
+		assert.doesNotThrow(() =>
+			parsePackageManifest(
+				withFiles({
+					'index.js': [
+						"import { packageStorage } from 'kody:runtime'",
+						"import a from './lib/a'",
+						"import b from './lib/b.js'",
+						"import c from './lib/c'",
+						"import data from './data.json'",
+						'const note = "import x from \'./missing.js\'"',
+						"export default async () => (await import('./lib/a.js')).default",
+					].join('\n'),
+					'lib/a.js': 'export default 1',
+					'lib/b.js': "export { default } from '../lib/a.js'",
+					'lib/c/index.js': 'export default 3',
+					'data.json': '{}',
+				}),
+			),
+		)
+	})
+
+	it('accepts files the exports never reach and optional dynamic imports, as celld links only reachable static imports', () => {
+		assert.doesNotThrow(() =>
+			parsePackageManifest(
+				withFiles({
+					'index.js':
+						"export default async () => { try { await import('./optional.js'); return 1 } catch { return 0 } }",
+					'test/unused.test.js': "import helper from '../src/helper.js'\nexport default helper",
+					'client/view.js': 'export default () => <div>hi</div>',
+				}),
+			),
+		)
+	})
+
+	it('checks files reached from job entries, not only exports', () => {
+		assert.throws(
+			() =>
+				parsePackageManifest({
+					'package.json': JSON.stringify({
+						name: '@scope/pkg',
+						version: '1.0.0',
+						exports: './index.js',
+						kody: { jobs: { nightly: { entry: './jobs/nightly.js', schedule: { type: 'interval', every: '1h' } } } },
+					}),
+					'README.md': '# pkg',
+					'AGENTS.md': 'Use it.',
+					'index.js': 'export default () => 1',
+					'jobs/nightly.js': "import { run } from './run.js'\nexport default run",
+				}),
+			/Cannot resolve "\.\/run\.js" from jobs\/nightly\.js/,
+		)
+	})
+
+	it('names the file when an import escapes the package root', () => {
+		assert.throws(
+			() => parsePackageManifest(withFiles({ 'index.js': "import x from '../../outside.js'\nexport default x" })),
+			(error: unknown) => {
+				const e = error as { code?: string; message?: string }
+				return (
+					e.code === 'invalid_import' &&
+					e.message === 'Cannot resolve "../../outside.js" from index.js: it points outside the package.'
+				)
+			},
+		)
+	})
+
+	it('refuses a relative import that resolves to nothing, naming the file', () => {
+		assert.throws(
+			() =>
+				parsePackageManifest(
+					withFiles({
+						'index.js': "import { packageStorage } from './kody-runtime.js'\nexport default () => 1",
+					}),
+				),
+			(error: unknown) => {
+				const e = error as { code?: string; message?: string }
+				return (
+					e.code === 'invalid_import' &&
+					e.message === 'Cannot resolve "./kody-runtime.js" from index.js: no such file in the package.'
+				)
+			},
+		)
+		assert.throws(
+			() => parsePackageManifest(withFiles({ 'index.js': "import doc from './README.md'\nexport default doc" })),
+			/Cannot resolve "\.\/README\.md" from index\.js/,
+		)
+	})
+
+	it('accepts import type / export type … from to a missing module; still refuses a real import', () => {
+		const tsPkg = (entry: string) => ({
+			'package.json': JSON.stringify({ name: '@scope/pkg', version: '1.0.0', exports: './index.ts' }),
+			'README.md': '# pkg',
+			'AGENTS.md': 'Use it.',
+			'index.ts': entry,
+		})
+		assert.doesNotThrow(() =>
+			parsePackageManifest(
+				tsPkg(
+					[
+						"import type { X } from './missing.js'",
+						"export type { Y } from './also-missing.js'",
+						'export default (): number => 1',
+					].join('\n'),
+				),
+			),
+		)
+		assert.throws(
+			() => parsePackageManifest(tsPkg("import { X } from './missing.js'\nexport default (): number => 1")),
+			(error: unknown) => {
+				const e = error as { code?: string; message?: string }
+				return (
+					e.code === 'invalid_import' &&
+					e.message === 'Cannot resolve "./missing.js" from index.ts: no such file in the package.'
+				)
+			},
+		)
+		// `import type from` binds the default export to `type` — a value import.
+		assert.throws(
+			() => parsePackageManifest(withFiles({ 'index.js': "import type from './missing.js'\nexport default type" })),
+			(error: unknown) => {
+				const e = error as { code?: string; message?: string }
+				return (
+					e.code === 'invalid_import' &&
+					e.message === 'Cannot resolve "./missing.js" from index.js: no such file in the package.'
+				)
+			},
+		)
+	})
+
+	it('checks files reached from subscription handlers, not only exports', () => {
+		assert.throws(
+			() =>
+				parsePackageManifest({
+					'package.json': JSON.stringify({
+						name: '@scope/pkg',
+						version: '1.0.0',
+						exports: './index.js',
+						kody: {
+							subscriptions: {
+								'email.message.received': { handler: './handlers/on-mail.js' },
+							},
+						},
+					}),
+					'README.md': '# pkg',
+					'AGENTS.md': 'Use it.',
+					'index.js': 'export default () => 1',
+					'handlers/on-mail.js': "import { handle } from './missing.js'\nexport default handle",
+				}),
+			/Cannot resolve "\.\/missing\.js" from handlers\/on-mail\.js/,
+		)
+		assert.doesNotThrow(() =>
+			parsePackageManifest({
+				'package.json': JSON.stringify({
+					name: '@scope/pkg',
+					version: '1.0.0',
+					exports: './index.js',
+					kody: {
+						subscriptions: {
+							'email.message.received': { handler: './handlers/on-mail.js' },
+						},
+					},
+				}),
+				'README.md': '# pkg',
+				'AGENTS.md': 'Use it.',
+				'index.js': 'export default () => 1',
+				'handlers/on-mail.js': "import { handle } from './run.js'\nexport default handle",
+				'handlers/run.js': 'export const handle = () => 1',
+			}),
+		)
+	})
+})
+
 describe('kody.webhooks + kody.subscriptions', () => {
 	const exportsMap = { '.': './index.js', './hook': './lib/other.js' }
 

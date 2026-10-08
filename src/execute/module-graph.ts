@@ -6,6 +6,7 @@ import {
 	resolvePackageExport,
 	type PackageFiles,
 } from '../packages/manifest.ts'
+import { lexImportSpecifiers, relativeImportCandidates, replaceImportSpecifiers } from './import-specifiers.ts'
 import { resolveNpmModules, type NpmResolverOptions } from './npm-resolver.ts'
 import { RUNTIME_MODULE_SOURCE } from './runtime-module.ts'
 import { buildWrapperModule } from './wrapper-module.ts'
@@ -25,10 +26,6 @@ error.name = ${JSON.stringify(`KodyError:${SEALED_ENTRY_ERROR}:403`)}
 throw error
 export default undefined
 `
-
-const staticImportRegex = /(\b(?:import|export)\b[^'"`;]*?\bfrom\s*)(['"])([^'"\n]+)\2/g
-const sideEffectImportRegex = /(^|[^\w.$])(import\s*)(['"])([^'"\n]+)\3/g
-const dynamicImportRegex = /(\bimport\s*\(\s*)(['"])([^'"\n]+)\2/g
 
 export type ModuleGraph = {
 	modules: Record<string, string>
@@ -90,28 +87,74 @@ export function stampPackageStorage(source: string, packageName: string) {
 	return source.replaceAll(/\bpackageStorage\(\s*\)/g, `packageStorage(${JSON.stringify(packageName)})`)
 }
 
+/**
+ * Rewrites the specifiers of real imports only (static, `export … from`,
+ * side-effect and literal `import()`), found by the lexer. Text that merely
+ * looks like an import inside a string, template literal or comment is left
+ * as written, so package files built inside `execute` survive packageSave.
+ */
 async function rewriteImports(source: string, fromPath: string, rewrite: Rewriter) {
+	const ranges = lexImportSpecifiers(source, fromPath)
 	const replacements = new Map<string, string>()
-	const collect = async (specifier: string) => {
-		if (!replacements.has(specifier)) replacements.set(specifier, await rewrite(specifier, fromPath))
+	// Skip type-only ranges for resolution (they are erased); a value import of
+	// the same specifier still populates replacements and rewrites both sites.
+	for (const { specifier, typeOnly } of ranges) {
+		if (typeOnly || replacements.has(specifier)) continue
+		replacements.set(specifier, await rewrite(specifier, fromPath))
 	}
-	for (const match of source.matchAll(staticImportRegex)) await collect(match[3] ?? '')
-	for (const match of source.matchAll(sideEffectImportRegex)) await collect(match[4] ?? '')
-	for (const match of source.matchAll(dynamicImportRegex)) await collect(match[3] ?? '')
-	let out = source.replace(
-		staticImportRegex,
-		(_m, head: string, quote: string, spec: string) => `${head}${quote}${replacements.get(spec) ?? spec}${quote}`,
-	)
-	out = out.replace(
-		sideEffectImportRegex,
-		(_m, pre: string, head: string, quote: string, spec: string) =>
-			`${pre}${head}${quote}${replacements.get(spec) ?? spec}${quote}`,
-	)
-	out = out.replace(
-		dynamicImportRegex,
-		(_m, head: string, quote: string, spec: string) => `${head}${quote}${replacements.get(spec) ?? spec}${quote}`,
-	)
-	return out
+	return replaceImportSpecifiers(source, fromPath, (specifier) => replacements.get(specifier) ?? null, ranges)
+}
+
+/**
+ * celld links only what the entry reaches through static imports. Walk that
+ * graph and name the first module that cannot be read or the first static
+ * relative import that resolves to nothing, instead of celld's opaque
+ * `instantiate: <none>`. Unreached files and dynamic `import()`s stay as
+ * they were: they never fail the isolate up front.
+ */
+function assertReachableImportsResolve(
+	modules: Record<string, string>,
+	entryPath: string,
+	unreadable: Map<string, KodyError>,
+) {
+	const known = new Set([...Object.keys(modules), RUNTIME_MODULE_PATH])
+	const queue = [entryPath]
+	const seen = new Set<string>()
+	while (queue.length > 0) {
+		const path = queue.shift() as string
+		if (seen.has(path)) continue
+		seen.add(path)
+		const failure = unreadable.get(path)
+		if (failure) throw failure
+		if (path === RUNTIME_MODULE_PATH || path.endsWith('.json')) continue
+		for (const { specifier, kind, typeOnly } of lexImportSpecifiers(modules[path] ?? '', path)) {
+			// Type-only imports are erased before link time (kody skips them too).
+			if (kind !== 'static' || typeOnly || !isRelative(specifier)) continue
+			let target: string
+			try {
+				target = resolveRelative(path, specifier)
+			} catch {
+				throw new KodyError(
+					'invalid_import',
+					`Cannot resolve "${specifier}" from ${describeModule(path)}: it points outside the package.`,
+				)
+			}
+			if (!known.has(target)) {
+				throw new KodyError('invalid_import', `Cannot resolve "${specifier}" from ${describeModule(path)}.`)
+			}
+			queue.push(target)
+		}
+	}
+}
+
+/** "lib/main.js in package @scope/pkg", or "your execute code" for the ad hoc module. */
+function describeModule(path: string) {
+	if (path === ADHOC_MODULE_PATH) return 'your execute code'
+	if (!path.startsWith('packages/')) return path
+	const rest = path.slice('packages/'.length)
+	const parts = rest.split('/')
+	const name = parts[0]?.startsWith('@') ? parts.slice(0, 2).join('/') : (parts[0] ?? '')
+	return `${rest.slice(name.length + 1)} in package ${name}`
 }
 
 /**
@@ -173,11 +216,17 @@ export async function buildModuleGraph(input: {
 		}
 		if (isBuiltin(specifier)) return specifier
 		if (isRelative(specifier)) {
-			const target = resolveRelative(fromPath, specifier)
-			for (const candidate of [target, `${target}.js`, target.replace(/\.ts$/, '.js'), `${target}/index.js`]) {
+			let target: string
+			try {
+				target = resolveRelative(fromPath, specifier)
+			} catch {
+				return specifier
+			}
+			for (const candidate of relativeImportCandidates(target)) {
 				if (!(candidate in modules)) continue
 				return importTarget(fromPath, candidate)
 			}
+			// Left as written; assertReachableImportsResolve names it if the entry reaches it.
 			return specifier
 		}
 		if (!input.allowNpm) {
@@ -190,14 +239,31 @@ export async function buildModuleGraph(input: {
 		return specifier
 	}
 
+	// Modules the lexer cannot read (e.g. JSX in client files) stay as written
+	// and only fail the run if the entry reaches them.
+	const unreadable = new Map<string, KodyError>()
+	const rewriteModule = async (source: string, path: string) => {
+		try {
+			return await rewriteImports(source, path, rewriter)
+		} catch (error) {
+			const kody = KodyError.fromUnknown(error)
+			if (!kody || kody.code !== 'invalid_module') throw error
+			unreadable.set(path, kody)
+			return source
+		}
+	}
+
 	const includeFiles = async (files: PackageFiles, toPath: (file: string) => string) => {
-		// Register paths first so relative-import checks see sibling modules.
-		for (const file of Object.keys(files)) modules[toPath(file)] = ''
+		// Register module paths first so relative-import checks see sibling
+		// modules; files that never become modules (docs, .txt) are not targets.
+		for (const file of Object.keys(files)) {
+			if (/\.(?:m?js|ts|json)$/.test(file)) modules[toPath(file)] = ''
+		}
 		for (const [file, source] of Object.entries(files)) {
 			const path = toPath(file)
 			// celld's Worker Loader accepts only JS/wasm modules, so JSON becomes an
 			// ES module and docs/other assets stay out of the isolate entirely.
-			if (/\.(?:m?js|ts)$/.test(file)) modules[path] = await rewriteImports(source, path, rewriter)
+			if (/\.(?:m?js|ts)$/.test(file)) modules[path] = await rewriteModule(source, path)
 			else if (/\.json$/.test(file)) modules[path] = `export default ${JSON.stringify(JSON.parse(source))}`
 			else delete modules[path]
 		}
@@ -221,7 +287,7 @@ export async function buildModuleGraph(input: {
 	if (input.entry.kind === 'adhoc') {
 		entryPath = ADHOC_MODULE_PATH
 		modules[entryPath] = ''
-		modules[entryPath] = await rewriteImports(input.entry.code, entryPath, rewriter)
+		modules[entryPath] = await rewriteModule(input.entry.code, entryPath)
 	} else {
 		packageName = input.entry.packageName
 		const pkg = await loadPackage(packageName)
@@ -238,19 +304,19 @@ export async function buildModuleGraph(input: {
 		}
 	}
 	if (sealedStubNeeded) modules[SEALED_MODULE_PATH] = SEALED_MODULE_SOURCE
+	assertReachableImportsResolve(modules, entryPath, unreadable)
 
 	if (npmSpecifiers.size > 0) {
 		const resolved = await resolveNpmModules([...npmSpecifiers], input.npm)
 		for (const [path, source] of Object.entries(resolved.modules)) modules[path] = source
 		warnings.push(...resolved.warnings)
-		for (const [specifier, path] of resolved.entryPaths) {
-			for (const modulePath of Object.keys(modules)) {
-				if (modulePath.startsWith('npm/')) continue
-				modules[modulePath] = sourceOf(modulePath).replaceAll(
-					new RegExp(`(['"])${specifier.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\1`, 'g'),
-					`$1${relativeSpecifier(modulePath, path)}$1`,
-				)
-			}
+		const npmPaths = new Map<string, string>(resolved.entryPaths)
+		for (const modulePath of Object.keys(modules)) {
+			if (modulePath.startsWith('npm/') || unreadable.has(modulePath)) continue
+			modules[modulePath] = replaceImportSpecifiers(sourceOf(modulePath), modulePath, (specifier) => {
+				const path = npmPaths.get(specifier)
+				return path ? relativeSpecifier(modulePath, path) : null
+			})
 		}
 	}
 

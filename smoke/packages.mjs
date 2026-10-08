@@ -107,4 +107,81 @@ export default async function main() { return await packageStorage().get('count'
 	const probe = await mcp.call('packageSave', { files: probeFiles, source: 'examples/packages/http-probe' })
 	assert(probe.name === '@kody-smoke/http-probe', 'http-probe save failed', probe)
 	log('packageSave', { name: probe.name })
+
+	// A package written from inside execute keeps its imports as written: the
+	// import inside this code's string literal must not be rewritten on the
+	// way into packageSave (it used to become './kody-runtime.js').
+	const agentSaved = await mcp.run(`import { kody } from 'kody:runtime'
+export default async function main() {
+  await kody.packageSave({
+    files: {
+      'package.json': JSON.stringify({ name: '@kody-smoke/agent-written', version: '1.0.0', description: 'saved from execute', exports: './lib/main.js' }),
+      'README.md': '# agent-written',
+      'AGENTS.md': 'Saved from execute.',
+      'lib/main.js': "import { packageStorage } from 'kody:runtime'\\nexport default async () => typeof packageStorage",
+    },
+  })
+  const saved = await kody.packageGet({ name: '@kody-smoke/agent-written', includeFiles: true })
+  return saved.files['lib/main.js'].split('\\n')[0]
+}`)
+	assert(
+		agentSaved === "import { packageStorage } from 'kody:runtime'",
+		'a package saved from execute keeps its kody:runtime import as written',
+		agentSaved,
+	)
+	const agentRun = await mcp.run(`import main from 'kody:@kody-smoke/agent-written'
+export default async () => main()`)
+	assert(agentRun === 'function', 'the package saved from execute loads and runs', agentRun)
+
+	const brokenSave = await mcp.execute(`import { kody } from 'kody:runtime'
+export default async function main() {
+  return await kody.packageSave({
+    files: {
+      'package.json': JSON.stringify({ name: '@kody-smoke/broken-import', version: '1.0.0', exports: './lib/main.js' }),
+      'README.md': '# broken', 'AGENTS.md': 'Broken.',
+      'lib/main.js': "import x from './missing.js'\\nexport default () => x",
+    },
+  })
+}`)
+	assert(
+		!brokenSave.ok &&
+			/invalid_import: Cannot resolve "\.\/missing\.js" from lib\/main\.js/.test(brokenSave.error?.message ?? ''),
+		'packageSave refuses a relative import that resolves to nothing, naming it',
+		brokenSave.error,
+	)
+	log('imports', { agentWritten: agentSaved, brokenImport: brokenSave.error?.message })
+
+	// celld links only what the entry reaches through static imports: unused
+	// files and optional dynamic imports must keep working as before.
+	const tolerant = {
+		'@kody-smoke/unreached-missing': {
+			'index.js': 'export default () => "ok"',
+			'test/unused.js': "import h from './missing.js'\nexport default h",
+		},
+		'@kody-smoke/unreached-jsx': {
+			'index.js': 'export default () => "ok"',
+			'client/view.js': 'export default () => <div>hi</div>',
+		},
+		'@kody-smoke/dynamic-optional': {
+			'index.js':
+				"export default async () => { try { await import('./optional.js'); return 'loaded' } catch { return 'fallback' } }",
+		},
+	}
+	for (const [name, files] of Object.entries(tolerant)) {
+		await mcp.call('packageSave', {
+			files: {
+				'package.json': JSON.stringify({ name, version: '1.0.0', exports: './index.js' }),
+				'README.md': `# ${name}`,
+				'AGENTS.md': 'Smoke.',
+				...files,
+			},
+		})
+		const result = await mcp.run(`import m from 'kody:${name}'\nexport default async () => m()`)
+		assert(
+			result === (name.endsWith('dynamic-optional') ? 'fallback' : 'ok'),
+			`${name} saves and runs: unreached files and optional dynamic imports are not checked`,
+			result,
+		)
+	}
+	log('imports', { unreachedAndDynamic: 'ok' })
 }

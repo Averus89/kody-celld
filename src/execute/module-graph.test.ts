@@ -32,7 +32,66 @@ const vaultFiles = {
 	'leak.js': "import provider from './provider.js'\nexport default async () => provider({ ref: 'x' })",
 }
 
-const packages: Record<string, Record<string, string>> = { '@t/counter': counterFiles, '@t/vault': vaultFiles }
+// A package written by an agent from inside execute: its source mentions
+// imports in a string, a template literal and a comment.
+const textFiles = {
+	'package.json': JSON.stringify({ name: '@t/text', version: '1.0.0', exports: { '.': './main.js' } }),
+	'README.md': 'text',
+	'AGENTS.md': 'text',
+	'main.js': [
+		"import { packageStorage } from 'kody:runtime'",
+		"export * from './lib/extra.js'",
+		'const template = "import { packageStorage } from \'kody:runtime\'"',
+		"// import other from 'kody:runtime'",
+		"const doc = `import x from './lib/extra.js'`",
+		"export default async () => ({ template, doc, extra: (await import('./lib/extra.js')).extra })",
+	].join('\n'),
+	'lib/extra.js': 'export const extra = 1',
+}
+
+const brokenFiles = {
+	'package.json': JSON.stringify({ name: '@t/broken', version: '1.0.0', exports: { '.': './lib/main.js' } }),
+	'README.md': 'broken',
+	'AGENTS.md': 'broken',
+	'lib/main.js': "import { packageStorage } from './kody-runtime.js'\nexport default async () => typeof packageStorage",
+}
+
+// Files celld never links (an unused test, a JSX client file) and an optional
+// dynamic import must not stop the package from running: celld instantiates
+// only what the entry reaches through static imports.
+const tolerantFiles = {
+	'package.json': JSON.stringify({ name: '@t/tolerant', version: '1.0.0', exports: { '.': './index.js' } }),
+	'README.md': 'tolerant',
+	'AGENTS.md': 'tolerant',
+	'index.js':
+		"export default async () => { try { await import('./optional.js'); return 'loaded' } catch { return 'fallback' } }",
+	'test/unused.test.js': "import helper from '../src/helper.js'\nexport default helper",
+	'client/view.js': 'export default () => <div>hi</div>',
+}
+
+const textImportFiles = {
+	'package.json': JSON.stringify({ name: '@t/text-import', version: '1.0.0', exports: { '.': './index.js' } }),
+	'README.md': 'text import',
+	'AGENTS.md': 'text import',
+	'index.js': "import notes from './notes.txt'\nexport default () => notes",
+	'notes.txt': 'not a module',
+}
+
+const packages: Record<string, Record<string, string>> = {
+	'@t/tolerant': tolerantFiles,
+	'@t/text-import': textImportFiles,
+	'@t/counter': counterFiles,
+	'@t/vault': vaultFiles,
+	'@t/text': textFiles,
+	'@t/broken': brokenFiles,
+}
+
+// Saved before packageSave checked relative imports: their stored manifests
+// exist even though parsing these files now refuses them.
+const savedBeforeImportCheck: Record<string, Record<string, string>> = {
+	'@t/broken': { 'lib/main.js': 'export default 1' },
+	'@t/text-import': { 'index.js': 'export default 1' },
+}
 
 const fakeUserCell = {
 	async packageGet(name: string) {
@@ -41,7 +100,11 @@ const fakeUserCell = {
 		return {
 			name,
 			version: '1.0.0',
-			manifest: parsePackageManifest(files),
+			// @t/broken was saved before packageSave checked relative imports, so its
+			// stored manifest exists even though parsing its files now refuses them.
+			manifest: parsePackageManifest(
+				savedBeforeImportCheck[name] ? { ...files, ...savedBeforeImportCheck[name] } : files,
+			),
 			files,
 			source: 'test',
 			createdAt: '',
@@ -88,6 +151,115 @@ describe('buildModuleGraph', () => {
 		assert.equal('packages/@t/counter/AGENTS.md' in graph.modules, false)
 		assert.match(graph.modules['packages/@t/counter/package.json'] ?? '', /^export default \{/)
 		assert.deepEqual(graph.packages, ['@t/counter'])
+	})
+
+	it('rewrites only real imports: strings, templates and comments that look like imports stay as written', async () => {
+		const graph = await buildModuleGraph({
+			entry: { kind: 'package', packageName: '@t/text' },
+			userCell: fakeUserCell,
+			allowNpm: false,
+		})
+		assert.equal(
+			graph.modules['packages/@t/text/main.js'],
+			[
+				"import { packageStorage } from '../../../kody-runtime.js'",
+				"export * from './lib/extra.js'",
+				'const template = "import { packageStorage } from \'kody:runtime\'"',
+				"// import other from 'kody:runtime'",
+				"const doc = `import x from './lib/extra.js'`",
+				"export default async () => ({ template, doc, extra: (await import('./lib/extra.js')).extra })",
+			].join('\n'),
+		)
+	})
+
+	it('names the file and package of a relative import that does not resolve', async () => {
+		await assert.rejects(
+			buildModuleGraph({
+				entry: { kind: 'package', packageName: '@t/broken' },
+				userCell: fakeUserCell,
+				allowNpm: false,
+			}),
+			(error: unknown) => {
+				const e = error as { code?: string; message?: string }
+				return (
+					e.code === 'invalid_import' &&
+					e.message === 'Cannot resolve "./kody-runtime.js" from lib/main.js in package @t/broken.'
+				)
+			},
+		)
+		await assert.rejects(
+			buildModuleGraph({
+				entry: { kind: 'adhoc', code: "import x from './nope.js'\nexport default () => x" },
+				userCell: fakeUserCell,
+				allowNpm: false,
+			}),
+			/Cannot resolve "\.\/nope\.js" from your execute code\./,
+		)
+	})
+
+	it('does not require import type to resolve; still names a missing value import', async () => {
+		const graph = await buildModuleGraph({
+			entry: {
+				kind: 'adhoc',
+				code: "import type { X } from './missing.js'\nexport default (): number => 1",
+			},
+			userCell: fakeUserCell,
+			allowNpm: false,
+		})
+		assert.match(graph.modules[graph.entryPath] ?? '', /import type \{ X \} from/)
+		// Bare type-only must not trip unsupported_import when npm is disabled.
+		await buildModuleGraph({
+			entry: {
+				kind: 'adhoc',
+				code: "import type { X } from 'missing-types'\nexport default (): number => 1",
+			},
+			userCell: fakeUserCell,
+			allowNpm: false,
+		})
+		await assert.rejects(
+			buildModuleGraph({
+				entry: {
+					kind: 'adhoc',
+					code: "import { X } from './missing.js'\nexport default (): number => 1",
+				},
+				userCell: fakeUserCell,
+				allowNpm: false,
+			}),
+			/Cannot resolve "\.\/missing\.js" from your execute code\./,
+		)
+		await assert.rejects(
+			buildModuleGraph({
+				entry: {
+					kind: 'adhoc',
+					code: "import type from './missing.js'\nexport default type",
+				},
+				userCell: fakeUserCell,
+				allowNpm: false,
+			}),
+			/Cannot resolve "\.\/missing\.js" from your execute code\./,
+		)
+	})
+
+	it('ignores files the entry never reaches and keeps optional dynamic imports catchable', async () => {
+		const graph = await buildModuleGraph({
+			entry: { kind: 'package', packageName: '@t/tolerant' },
+			userCell: fakeUserCell,
+			allowNpm: false,
+		})
+		assert.equal(graph.modules['packages/@t/tolerant/index.js'], tolerantFiles['index.js'])
+		assert.equal(graph.modules['packages/@t/tolerant/test/unused.test.js'], tolerantFiles['test/unused.test.js'])
+		assert.equal(graph.modules['packages/@t/tolerant/client/view.js'], tolerantFiles['client/view.js'])
+	})
+
+	it('does not resolve imports to files that never become modules', async () => {
+		await assert.rejects(
+			buildModuleGraph({
+				entry: { kind: 'package', packageName: '@t/text-import' },
+				userCell: fakeUserCell,
+				allowNpm: false,
+			}),
+			/Cannot resolve "\.\/notes\.txt" from index\.js in package @t\/text-import\./,
+		)
 	})
 
 	it('refuses bare npm imports when npm is disabled and unknown packages always', async () => {

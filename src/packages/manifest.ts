@@ -1,3 +1,4 @@
+import { lexImportSpecifiers, relativeImportCandidates } from '../execute/import-specifiers.ts'
 import { KodyError } from '../lib/errors.ts'
 
 // Mirrors kentcdodds/kody `package.json#kody` shapes for the surfaces this
@@ -404,7 +405,7 @@ export function parsePackageManifest(files: PackageFiles): PackageManifest {
 	if (!readme) throw new KodyError('invalid_manifest', 'A non-empty README.md is required.')
 	if (!agents) throw new KodyError('invalid_manifest', 'A non-empty AGENTS.md is required.')
 
-	return {
+	const manifest: PackageManifest = {
 		name,
 		version: typeof json.version === 'string' ? json.version : '0.0.0',
 		description:
@@ -422,6 +423,12 @@ export function parsePackageManifest(files: PackageFiles): PackageManifest {
 		hidden: kody.hidden === true,
 		keywords: Array.isArray(json.keywords) ? json.keywords.filter((k): k is string => typeof k === 'string') : [],
 	}
+	assertRelativeImportsResolve(files, [
+		...Object.values(manifest.exports),
+		...Object.values(manifest.jobs).map((job) => job.entry),
+		...manifest.subscriptions.map((subscription) => subscription.handler),
+	])
+	return manifest
 }
 
 /** Resolves `kody:@scope/pkg/export` or `kody:pkg` into package + export name. */
@@ -454,4 +461,54 @@ export function resolvePackageExport(manifest: PackageManifest, exportName: stri
 		)
 	}
 	return path
+}
+
+/**
+ * kody-celld: static relative imports reached from the package's entry points
+ * (exports, job entries, subscription handlers) must name a module in the
+ * package, using the module graph's lookup (`x`, `x.js`, `.ts` as `.js`,
+ * `x/index.js`; code and JSON only). celld links exactly those, so a broken
+ * one is refused here instead of failing as `instantiate: <none>` after the
+ * next restart. Files nothing reaches (tests, client code), dynamic
+ * `import()`s, and TypeScript `import type` / `export type … from` are not
+ * checked: celld never links them up front, a failed `import()` stays
+ * catchable, and type-only imports are erased (kody skips them too). Imports
+ * come from the lexer, so text in strings and comments is never checked.
+ */
+function assertRelativeImportsResolve(files: PackageFiles, entries: Array<string>) {
+	const sources = new Map<string, string>()
+	for (const [file, source] of Object.entries(files)) {
+		if (/\.(?:m?js|ts|json)$/.test(file)) sources.set(normalizeModulePath(file), source)
+	}
+	const queue = [...entries]
+	const seen = new Set<string>()
+	while (queue.length > 0) {
+		const path = queue.shift() as string
+		if (seen.has(path)) continue
+		seen.add(path)
+		const source = sources.get(path)
+		if (source === undefined || path.endsWith('.json')) continue
+		const base = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
+		for (const { specifier, kind, typeOnly } of lexImportSpecifiers(source, path)) {
+			if (kind !== 'static' || typeOnly) continue
+			if (!specifier.startsWith('./') && !specifier.startsWith('../') && !specifier.startsWith('/')) continue
+			let target: string
+			try {
+				target = normalizeModulePath(base ? `${base}/${specifier}` : specifier)
+			} catch {
+				throw new KodyError(
+					'invalid_import',
+					`Cannot resolve "${specifier}" from ${path}: it points outside the package.`,
+				)
+			}
+			const found = relativeImportCandidates(target).find((candidate) => sources.has(candidate))
+			if (!found) {
+				throw new KodyError(
+					'invalid_import',
+					`Cannot resolve "${specifier}" from ${path}: no such file in the package.`,
+				)
+			}
+			queue.push(found)
+		}
+	}
 }
