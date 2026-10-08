@@ -173,6 +173,39 @@ export type RunView = {
 	status: string
 	durationMs: number | null
 	error: string | null
+	errorTriage: 'ignored' | 'resolved' | null
+}
+
+export type RunSummaryView = {
+	errors: number
+	ignored: number
+	resolved: number
+	running: number
+}
+
+export type RunDetailView = {
+	id: string
+	kind: string
+	packageName: string | null
+	jobId: string | null
+	status: string
+	createdAt: string
+	durationMs: number | null
+	error: string | null
+	errorTriage: 'ignored' | 'resolved' | null
+	triageNote: string | null
+	triagedAt: string | null
+	triagedBy: string | null
+	logs: Array<string>
+	result: string | null
+	warnings: Array<string>
+	gateway: Array<{
+		method: string
+		host: string
+		outcome: string
+		status: number | null
+		reason: string | null
+	}>
 }
 
 export type IntegrationView = {
@@ -416,7 +449,16 @@ export type AppLoaderData =
 			selected: MemoryDetailView | null
 	  }
 	| { page: 'accountWebhooks'; webhooks: Array<WebhookIndexView> }
-	| { page: 'accountActivity'; runs: Array<RunView> }
+	| {
+			page: 'accountActivity'
+			csrf: string
+			view: 'errors' | 'recent'
+			error: string | null
+			summary: RunSummaryView
+			runs: Array<RunView>
+			selectedId: string | null
+			selected: RunDetailView | null
+	  }
 	| {
 			page: 'accountIntegrations'
 			csrf: string

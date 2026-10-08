@@ -69,3 +69,34 @@ every user — handy right after a deploy or to test without waiting a minute.
 - `execute_timeout` (60 s) applies.
 - Deleting the package deletes its jobs; re-saving with a changed schedule
   recomputes `nextRunAt` from now.
+
+## Run triage
+
+Failed runs can be soft-triaged, as in kody (`docs/use/activity.md`):
+
+- `runSummary({ since? })` — "is anything broken?": total, open `errors`
+  (not ignored/resolved), `ignored`, `resolved`, `running`, and `byKind`.
+- `runUpdate({ runId, triage, note? })` — mark an **error** run `ignored` or
+  `resolved`, or `open` to clear triage. Status, error, logs and result never
+  change. Omit `note` to keep it, pass `""` to clear it (max 2000 characters).
+- `runUpdateBulk({ runIds | filter, triage, note?, limit?, dryRun? })` — up to
+  100 error runs by id or by an exact filter (`kind`, `packageName`, `jobId`,
+  `errorName`, `errorMessage`, plus `errorTriage`, default `open`). Preview with
+  `dryRun`, repeat while `hasMore`. A filtered reopen must name
+  `errorTriage: "ignored"` or `"resolved"`.
+- `runList({ errorTriage })` — `open | ignored | resolved | all`. Unlike
+  kody, the default is `all`, so existing callers see every run. `open` is
+  unhandled **error** runs only; kody's list `open` still shows successes and
+  running (it only hides ignored/resolved).
+
+When a job run succeeds, **earlier** open errors of the same job (strictly
+older `created_at`, with `id` as a tie-break) are marked `resolved`
+(`triagedBy: "system:auto-resolve"`); runs you ignored are left as they are.
+(Kody excludes only `id !=` the success; celld also bounds by start time so a
+later overlapping failure stays open.) Job runs recorded before this feature
+carry no job id, so their errors stay open until you triage them: list open
+errors (`runList({ errorTriage: "open" })`), pick the ones with a null
+`jobId`, and pass those ids to `runUpdateBulk({ runIds, … })` — do not use a
+`packageName`-only filter, which would also match current open errors. The
+Activity page (`/account/runs`) shows the same counts, opens on Open errors
+when there are any, and has Ignore / Resolve / Reopen buttons.

@@ -20,7 +20,8 @@ import { parsePackageManifest } from '../packages/manifest.ts'
 import { decodePreviewSource, encodePreviewSource } from '../packages/preview-source.ts'
 import { renderPage } from '#app/render.tsx'
 import { inProcessHighlightEnv, loadPackageFilesData } from '#app/package-files-data.ts'
-import { type AppLoaderData, type PageFlash } from '#universal/loader-data.ts'
+import { type AppLoaderData, type PageFlash, type RunDetailView } from '#universal/loader-data.ts'
+import type { RunRecord } from '../cells/user-cell.ts'
 import { routes } from '#universal/routes.ts'
 import { accountAliasLocation } from './account-aliases.ts'
 import { matchAccountDetailPath } from './account-detail-paths.ts'
@@ -43,6 +44,9 @@ const flashes: Record<string, PageFlash> = {
 	forked: { kind: 'ok', text: 'Package forked into your catalog.' },
 	published: { kind: 'ok', text: 'Published to the community catalog.' },
 	unpublished: { kind: 'ok', text: 'Removed from the community catalog.' },
+	run_ignored: { kind: 'ok', text: 'Run marked ignored.' },
+	run_resolved: { kind: 'ok', text: 'Run marked resolved.' },
+	run_reopened: { kind: 'ok', text: 'Run reopened.' },
 }
 
 function view(
@@ -816,13 +820,58 @@ export async function handleAccount(request: Request, env: Env, url: URL): Promi
 		}
 
 		case 'runs': {
-			if (post) break
-			const runs = await userCell.runList({ limit: 50 })
+			let triageError: string | null = null
+			if (post) {
+				const triage =
+					form.triage === 'ignored' || form.triage === 'resolved' || form.triage === 'open' ? form.triage : null
+				const back = form.view === 'recent' ? 'recent' : 'errors'
+				if (form.action !== 'triage' || !form.runId || !triage) return redirect(routes.accountActivity.href())
+				// Triage from the expanded run returns to it (`open` = run id).
+				const backPath = form.open
+					? `${routes.accountActivity.href()}/${encodeURIComponent(form.open)}`
+					: routes.accountActivity.href()
+				try {
+					await userCell.runTriageUpdate({ runId: form.runId, triage, note: undefined })
+					await audit('run.triage', form.runId, { triage, via: 'web' })
+					return redirect(
+						hrefWithFlash(`${backPath}?view=${back}`, triage === 'open' ? 'run_reopened' : `run_${triage}`),
+					)
+				} catch (error) {
+					const known = KodyError.fromUnknown(error)
+					if (!known) console.error('[kody-celld] Activity triage update failed', form.runId, error)
+					triageError = known?.message ?? 'Update failed.'
+				}
+			}
+			const summary = await userCell.runSummary({})
+			const viewParam = url.searchParams.get('view') ?? (post ? form.view : null)
+			const viewMode: 'errors' | 'recent' =
+				viewParam === 'errors' || viewParam === 'recent' ? viewParam : summary.errors > 0 ? 'errors' : 'recent'
+			const runs = await userCell.runList({ limit: 50, errorTriage: viewMode === 'errors' ? 'open' : 'all' })
+			let selectedId: string | null = post ? (form.open ?? null) : (segments[1] ?? null)
+			if (selectedId && !post) {
+				try {
+					selectedId = decodeURIComponent(selectedId)
+				} catch {
+					selectedId = null
+				}
+			}
+			const selectedRun = selectedId ? await userCell.runGet({ id: selectedId }) : null
 			return view(session, {
 				title: 'Runs',
 				current: '/account/runs',
+				flash,
+				...(triageError ? { status: 400 } : {}),
 				data: {
 					page: 'accountActivity',
+					csrf: session.csrf,
+					view: viewMode,
+					error: triageError,
+					summary: {
+						errors: summary.errors,
+						ignored: summary.ignored,
+						resolved: summary.resolved,
+						running: summary.running,
+					},
 					runs: runs.map((run) => ({
 						id: run.id,
 						createdAt: run.createdAt,
@@ -831,7 +880,10 @@ export async function handleAccount(request: Request, env: Env, url: URL): Promi
 						status: run.status,
 						durationMs: run.durationMs,
 						error: run.error ? `${run.error.name}: ${run.error.message}` : null,
+						errorTriage: run.errorTriage,
 					})),
+					selectedId,
+					selected: selectedRun ? runDetailView(selectedRun) : null,
 				},
 			})
 		}
@@ -935,4 +987,47 @@ export async function handleAccount(request: Request, env: Env, url: URL): Promi
 		}
 	}
 	throw new KodyError('not_found', `No account page for ${request.method} ${url.pathname}.`, { status: 404 })
+}
+
+const runDetailResultLimit = 4000
+const runDetailLogLimit = 200
+
+/** Activity's expanded run: full error, readable log lines, a capped result. */
+function runDetailView(run: RunRecord): RunDetailView {
+	const logs = (JSON.parse(run.logsJson) as Array<unknown>).slice(0, runDetailLogLimit).map((entry) => {
+		const line = entry as { level?: unknown; args?: unknown }
+		const args = Array.isArray(line?.args) ? line.args : [entry]
+		const level = typeof line?.level === 'string' ? line.level : 'log'
+		return `${level}: ${args.map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' ')}`
+	})
+	const result =
+		run.resultJson === null
+			? null
+			: run.resultJson.length > runDetailResultLimit
+				? `${run.resultJson.slice(0, runDetailResultLimit)}…`
+				: run.resultJson
+	return {
+		id: run.id,
+		kind: run.kind,
+		packageName: run.packageName,
+		jobId: run.jobId,
+		status: run.status,
+		createdAt: run.createdAt,
+		durationMs: run.durationMs,
+		error: run.error ? `${run.error.name}: ${run.error.message}` : null,
+		errorTriage: run.errorTriage,
+		triageNote: run.triageNote,
+		triagedAt: run.triagedAt,
+		triagedBy: run.triagedBy,
+		logs,
+		result,
+		warnings: run.warnings,
+		gateway: run.gateway.map((event) => ({
+			method: event.method,
+			host: event.host,
+			outcome: event.outcome,
+			status: event.status,
+			reason: event.reason ?? null,
+		})),
+	}
 }
