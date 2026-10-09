@@ -52,15 +52,15 @@ signed download `url`) for large captures.
 
 ## Configuration
 
-| Variable                           | Default  | Notes                                                                                                                                            |
-| ---------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `KODY_BROWSER_PROVIDER`            | `none`   | `none` (capabilities answer `browser_not_configured`, 501), `browserless`, `cloudflare`.                                                         |
-| `KODY_BROWSER_URL`                 | —        | browserless base URL, e.g. `http://browserless:3000` (compose) or `http://192.168.1.20:3000`. For cloudflare, optional API base override.        |
-| `KODY_BROWSER_TOKEN`               | —        | browserless `TOKEN` (query-string auth) or a Cloudflare API token with Browser Rendering permission. Operator-only; surfaced as `hasToken`.      |
-| `KODY_BROWSER_CF_ACCOUNT_ID`       | —        | Required for `cloudflare`.                                                                                                                       |
-| `KODY_BROWSER_TIMEOUT_MS`          | `30000`  | Per render request (1 s – 5 min). Also the default in-page navigation timeout.                                                                   |
-| `KODY_BROWSER_ALLOW_PRIVATE_HOSTS` | —        | Comma-separated hostnames/IPs the browser may render although they are loopback/private/link-local (a LAN dashboard, `host.docker.internal`, …). |
-| `KODY_MCP_CONTENT_LIMIT_BYTES`     | `512000` | Cap for `__mcpContent` returned by `execute` (see above).                                                                                        |
+| Variable                           | Default  | Notes                                                                                                                                                                                                                                                            |
+| ---------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `KODY_BROWSER_PROVIDER`            | `none`   | `none` (capabilities answer `browser_not_configured`, 501), `browserless`, `cloudflare`.                                                                                                                                                                         |
+| `KODY_BROWSER_URL`                 | —        | browserless base URL, e.g. `http://browserless:3000` (compose) or `http://192.168.1.20:3000`. For cloudflare, optional API base override.                                                                                                                        |
+| `KODY_BROWSER_TOKEN`               | —        | browserless `TOKEN` (query-string auth) or a Cloudflare API token with Browser Rendering permission. Operator-only; surfaced as `hasToken`.                                                                                                                      |
+| `KODY_BROWSER_CF_ACCOUNT_ID`       | —        | Required for `cloudflare`.                                                                                                                                                                                                                                       |
+| `KODY_BROWSER_TIMEOUT_MS`          | `30000`  | Per render request (1 s – 5 min). Also the default in-page navigation timeout.                                                                                                                                                                                   |
+| `KODY_BROWSER_ALLOW_PRIVATE_HOSTS` | —        | Comma-separated hostnames/IPs the browser may render although they are loopback/private/link-local (a LAN dashboard, `host.docker.internal`, …). Entries may also be `*.suffix` wildcards or CIDR ranges (`172.30.0.0/16`); a CIDR matches IP-literal URLs only. |
+| `KODY_MCP_CONTENT_LIMIT_BYTES`     | `512000` | Cap for `__mcpContent` returned by `execute` (see above).                                                                                                                                                                                                        |
 
 `GET /admin/browser` returns the parsed provider (no token).
 
@@ -108,11 +108,19 @@ request shapes, so packages behave identically.
   its host may not be loopback, RFC 1918 / CGNAT / link-local (including
   `169.254.169.254` cloud metadata and IPv4-mapped IPv6 like `::ffff:10.0.0.1`),
   `.local`/`.internal`/single-label names, or `file:`/`data:` schemes — unless
-  the exact host is in `KODY_BROWSER_ALLOW_PRIVATE_HOSTS`. The check is on the
+  the host is in `KODY_BROWSER_ALLOW_PRIVATE_HOSTS` (an exact host, or an IP
+  literal inside a listed CIDR range such as `172.30.0.0/16`). The check is on the
   literal URL; DNS names that resolve to private addresses are not detected, so
   keep the browser on an isolated network (the compose overlay does this: the
   browser shares only the compose network with Kody) if untrusted users can
   render arbitrary URLs.
+
+  MCP server URLs (`mcpServerAdd`) get a stronger check: the hostname is
+  resolved through DNS-over-HTTPS before every hop and private answers are
+  refused ([mcp-servers.md](./mcp-servers.md)). It has the same fast-rebinding
+  gap, because `fetch` resolves the name again when it connects; tracked in
+  [kody-celld#45](https://github.com/kentcdodds/kody-celld/issues/45).
+
 - **The browser is not the gateway.** Pages are fetched by Chromium, so
   `{{secret:…}}` placeholders are never resolved in browser requests and
   approved-host rules do not apply — the browser sees whatever a public visitor
