@@ -2,7 +2,7 @@
 // kody:<pkg>/<export> imports), and prove packageStorage() isolation.
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { assert, log, readPackageDir } from './lib.mjs'
+import { assert, log, readPackageDir, sha256 } from './lib.mjs'
 
 const examples = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../examples/packages')
 
@@ -184,4 +184,120 @@ export default async function main() {
 		)
 	}
 	log('imports', { unreachedAndDynamic: 'ok' })
+
+	// Per-file SQLite rows: a ~3.5 MiB package (with one file over 1 MiB) must
+	// round-trip, and anything over the documented 4 MiB cap must be refused
+	// with an error that names the limit (issue #35 part 3).
+	const bigChunk = 'x'.repeat(1.2 * 1024 * 1024)
+	const midChunk = 'y'.repeat(1.1 * 1024 * 1024)
+	const filler = 'z'.repeat(1.2 * 1024 * 1024)
+	const largeFiles = {
+		'package.json': JSON.stringify({
+			name: '@kody-smoke/large-package',
+			version: '1.0.0',
+			description: 'smoke large package',
+			exports: './index.js',
+		}),
+		'README.md': '# large-package',
+		'AGENTS.md': 'Large package smoke.',
+		'index.js': 'export default async () => "large-ok"',
+		'data/big-a.txt': bigChunk,
+		'data/big-b.txt': midChunk,
+		'data/filler.txt': filler,
+	}
+	const largeTotal = Object.values(largeFiles).reduce((n, content) => n + content.length, 0)
+	assert(
+		largeTotal > 3.4 * 1024 * 1024 && largeTotal < 4 * 1024 * 1024,
+		`large package fixture should be ~3.5 MiB (got ${largeTotal})`,
+		{ largeTotal },
+	)
+	assert(bigChunk.length > 1024 * 1024, 'at least one file must exceed 1 MiB', bigChunk.length)
+	// Save over REST so the 3.5 MiB file map is not an execute result payload.
+	const largeSaved = await mcp.callDirect('packageSave', { files: largeFiles, source: 'smoke/packages.mjs' })
+	assert(largeSaved.name === '@kody-smoke/large-package', 'large packageSave returned wrong name', largeSaved)
+	assert(largeSaved.fileCount === Object.keys(largeFiles).length, 'large package fileCount', largeSaved)
+	const expectedDigests = {
+		'data/big-a.txt': sha256(bigChunk),
+		'data/big-b.txt': sha256(midChunk),
+		'data/filler.txt': sha256(filler),
+	}
+	// Hash inside execute — returning the full files map would exceed responseLimit.
+	const largeRoundTrip = await mcp.run(
+		`import { kody } from 'kody:runtime'
+async function sha256Hex(text) {
+  const bytes = new TextEncoder().encode(text)
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+export default async function main({ expect }) {
+  const pkg = await kody.packageGet({ name: '@kody-smoke/large-package', includeFiles: true })
+  const digests = {}
+  for (const path of Object.keys(expect)) {
+    const content = pkg.files[path]
+    if (typeof content !== 'string') return { ok: false, path, reason: 'missing' }
+    digests[path] = await sha256Hex(content)
+  }
+  return { ok: true, fileCount: Object.keys(pkg.files).length, digests }
+}`,
+		{ expect: expectedDigests },
+	)
+	assert(largeRoundTrip.ok === true, 'large packageGet must return all big files', largeRoundTrip)
+	assert(largeRoundTrip.fileCount === Object.keys(largeFiles).length, 'large package file count', largeRoundTrip)
+	assert(
+		largeRoundTrip.digests['data/big-a.txt'] === expectedDigests['data/big-a.txt'] &&
+			largeRoundTrip.digests['data/big-b.txt'] === expectedDigests['data/big-b.txt'] &&
+			largeRoundTrip.digests['data/filler.txt'] === expectedDigests['data/filler.txt'],
+		'large package file digests must match what was saved',
+		largeRoundTrip.digests,
+	)
+	const largeRun = await mcp.run(`import m from 'kody:@kody-smoke/large-package'\nexport default async () => m()`)
+	assert(largeRun === 'large-ok', 'large package must still execute', largeRun)
+	log('large package', { bytes: largeTotal, files: largeSaved.fileCount, run: largeRun })
+
+	// Over the 4 MiB total while each file stays under the ~1.8 MiB bind cap.
+	const overLimit = await mcp.execute(`import { kody } from 'kody:runtime'
+export default async function main() {
+  const chunk = 'x'.repeat(1_500_000)
+  return await kody.packageSave({
+    files: {
+      'package.json': JSON.stringify({ name: '@kody-smoke/too-big', version: '1.0.0', exports: './index.js' }),
+      'README.md': '# too-big',
+      'AGENTS.md': 'Too big.',
+      'index.js': 'export default async () => 1',
+      'a.txt': chunk,
+      'b.txt': chunk,
+      'c.txt': chunk,
+    },
+  })
+}`)
+	assert(
+		!overLimit.ok &&
+			/invalid_package:.*at most 4 MiB/.test(overLimit.error?.message ?? '') &&
+			/limit is 4 MiB/.test(overLimit.error?.message ?? ''),
+		'packages over 4 MiB must be rejected naming the limit',
+		overLimit.error,
+	)
+	log('over-limit package rejected', overLimit.error.message.slice(0, 120))
+
+	const overFile = await mcp.execute(`import { kody } from 'kody:runtime'
+export default async function main() {
+  const huge = 'x'.repeat(1_800_001)
+  return await kody.packageSave({
+    files: {
+      'package.json': JSON.stringify({ name: '@kody-smoke/file-too-big', version: '1.0.0', exports: './index.js' }),
+      'README.md': '# file-too-big',
+      'AGENTS.md': 'File too big.',
+      'index.js': 'export default async () => 1',
+      'blob.txt': huge,
+    },
+  })
+}`)
+	assert(
+		!overFile.ok &&
+			/invalid_package:.*File "blob\.txt"/.test(overFile.error?.message ?? '') &&
+			/SQLite bind limit/.test(overFile.error?.message ?? ''),
+		'a single file over the SQLite bind cap must be rejected naming the file and limit',
+		overFile.error,
+	)
+	log('over-file package rejected', overFile.error.message.slice(0, 140))
 }
