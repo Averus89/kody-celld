@@ -9,6 +9,14 @@ import {
 import { lexImportSpecifiers, relativeImportCandidates, replaceImportSpecifiers } from './import-specifiers.ts'
 import { resolveNpmModules, type NpmResolverOptions } from './npm-resolver.ts'
 import { RUNTIME_MODULE_SOURCE } from './runtime-module.ts'
+import {
+	isCodeModulePath,
+	jsxOptionsFromFiles,
+	stripTypes,
+	transpileKind,
+	type JsxOptions,
+	type TranspileKind,
+} from './strip-types.ts'
 import { buildWrapperModule } from './wrapper-module.ts'
 
 export const RUNTIME_MODULE_PATH = 'kody-runtime.js'
@@ -26,6 +34,19 @@ error.name = ${JSON.stringify(`KodyError:${SEALED_ENTRY_ERROR}:403`)}
 throw error
 export default undefined
 `
+
+/** Module body that throws a recorded rewrite/admission failure when first evaluated. */
+function deferredModuleFailureSource(error: KodyError) {
+	// Joined strings (not one template) so Node's type stripper does not treat the
+	// embedded `export default` as real module syntax.
+	return [
+		`const error = new Error(${JSON.stringify(error.message)})`,
+		`error.name = ${JSON.stringify(error.name)}`,
+		'throw error',
+		'export default undefined',
+		'',
+	].join('\n')
+}
 
 export type ModuleGraph = {
 	modules: Record<string, string>
@@ -147,6 +168,38 @@ function assertReachableImportsResolve(
 	}
 }
 
+/**
+ * Modules the entry can load: reached through static or literal dynamic
+ * relative imports (after rewriting, `kody:` package imports are relative
+ * too). Only these fetch their npm imports, so unreached client files of a
+ * package app cost nothing.
+ */
+function loadableModules(modules: Record<string, string>, entryPath: string) {
+	const queue = [entryPath]
+	const seen = new Set<string>()
+	while (queue.length > 0) {
+		const path = queue.shift() as string
+		if (seen.has(path) || !(path in modules)) continue
+		seen.add(path)
+		if (path.endsWith('.json')) continue
+		let ranges
+		try {
+			ranges = lexImportSpecifiers(modules[path] ?? '', path)
+		} catch {
+			continue
+		}
+		for (const { specifier, typeOnly } of ranges) {
+			if (typeOnly || !isRelative(specifier)) continue
+			try {
+				queue.push(resolveRelative(path, specifier))
+			} catch {
+				// Points outside the package: assertReachableImportsResolve names static ones.
+			}
+		}
+	}
+	return seen
+}
+
 /** "lib/main.js in package @scope/pkg", or "your execute code" for the ad hoc module. */
 function describeModule(path: string) {
 	if (path === ADHOC_MODULE_PATH) return 'your execute code'
@@ -178,7 +231,8 @@ export async function buildModuleGraph(input: {
 	const sourceOf = (path: string) => modules[path] ?? ''
 	const warnings: Array<string> = []
 	const includedPackages = new Set<string>()
-	const npmSpecifiers = new Set<string>()
+	// Bare npm specifiers per importing module: only modules the entry can load fetch theirs.
+	const npmByModule = new Map<string, Set<string>>()
 	const packageCache = new Map<string, Awaited<ReturnType<UserCell['packageGet']>>>()
 
 	const loadPackage = async (name: string) => {
@@ -235,36 +289,62 @@ export async function buildModuleGraph(input: {
 				`Bare import "${specifier}" is not available: npm imports are disabled on this host.`,
 			)
 		}
-		npmSpecifiers.add(specifier)
+		const set = npmByModule.get(fromPath) ?? new Set<string>()
+		set.add(specifier)
+		npmByModule.set(fromPath, set)
 		return specifier
 	}
 
-	// Modules the lexer cannot read (e.g. JSX in client files) stay as written
-	// and only fail the run if the entry reaches them.
+	// Modules that cannot be read or linked (JSX in .js client files, TypeScript
+	// or JSX sucrase cannot parse, an import this host refuses) only fail the run
+	// if the entry reaches them. Never publish the original source on failure:
+	// rewrite may have computed sealed-provider redirects (or other mandatory
+	// rewrites) and then thrown before applying them, which would leave a
+	// dynamic-only path able to import a secretProvider entry outside a sealed
+	// run. A throwing stub keeps unreached broken files from failing the run
+	// without that hole. TypeScript and JSX are compiled first, so imports used
+	// only as types are gone before the import rewrite and the reachability check.
 	const unreadable = new Map<string, KodyError>()
-	const rewriteModule = async (source: string, path: string) => {
+	const rewriteModule = async (source: string, path: string, kind: TranspileKind | null, jsx?: JsxOptions) => {
 		try {
-			return await rewriteImports(source, path, rewriter)
+			const code = kind ? stripTypes(source, describeModule(path), kind, jsx) : source
+			return await rewriteImports(code, path, rewriter)
 		} catch (error) {
 			const kody = KodyError.fromUnknown(error)
-			if (!kody || kody.code !== 'invalid_module') throw error
+			if (!kody) throw error
 			unreadable.set(path, kody)
-			return source
+			return deferredModuleFailureSource(kody)
+		}
+	}
+
+	// JSON that does not parse (a JSONC tsconfig.json) only fails a run that imports it.
+	const jsonModule = (source: string, path: string) => {
+		try {
+			return `export default ${JSON.stringify(JSON.parse(source))}`
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error)
+			unreadable.set(
+				path,
+				new KodyError('invalid_module', `Cannot read the JSON in ${describeModule(path)}: ${message}.`),
+			)
+			return 'export default undefined'
 		}
 	}
 
 	const includeFiles = async (files: PackageFiles, toPath: (file: string) => string) => {
+		const jsx = jsxOptionsFromFiles(files)
 		// Register module paths first so relative-import checks see sibling
-		// modules; files that never become modules (docs, .txt) are not targets.
+		// modules; files that never become modules (docs, .d.ts) are not targets.
 		for (const file of Object.keys(files)) {
-			if (/\.(?:m?js|ts|json)$/.test(file)) modules[toPath(file)] = ''
+			if (isCodeModulePath(file) || file.endsWith('.json')) modules[toPath(file)] = ''
 		}
 		for (const [file, source] of Object.entries(files)) {
 			const path = toPath(file)
-			// celld's Worker Loader accepts only JS/wasm modules, so JSON becomes an
-			// ES module and docs/other assets stay out of the isolate entirely.
-			if (/\.(?:m?js|ts)$/.test(file)) modules[path] = await rewriteModule(source, path)
-			else if (/\.json$/.test(file)) modules[path] = `export default ${JSON.stringify(JSON.parse(source))}`
+			// celld's Worker Loader accepts only JS/wasm modules: TypeScript and JSX
+			// are compiled, JSON becomes an ES module, and docs, declaration files and
+			// other assets stay out of the isolate entirely.
+			if (isCodeModulePath(file)) modules[path] = await rewriteModule(source, path, transpileKind(file), jsx)
+			else if (file.endsWith('.json')) modules[path] = jsonModule(source, path)
 			else delete modules[path]
 		}
 	}
@@ -276,7 +356,7 @@ export async function buildModuleGraph(input: {
 		if (pkg.manifest.secretProvider) providerEntryPaths.add(packageModulePath(name, pkg.manifest.secretProvider.entry))
 		await includeFiles(pkg.files, (file) => packageModulePath(name, file))
 		for (const file of Object.keys(pkg.files)) {
-			if (!/\.(?:m?js|ts)$/.test(file)) continue
+			if (!isCodeModulePath(file)) continue
 			const path = packageModulePath(name, file)
 			modules[path] = stampPackageStorage(sourceOf(path), name)
 		}
@@ -287,7 +367,8 @@ export async function buildModuleGraph(input: {
 	if (input.entry.kind === 'adhoc') {
 		entryPath = ADHOC_MODULE_PATH
 		modules[entryPath] = ''
-		modules[entryPath] = await rewriteModule(input.entry.code, entryPath)
+		// Ad hoc code is read as TypeScript (not JSX: it has no tsconfig.json to choose a runtime).
+		modules[entryPath] = await rewriteModule(input.entry.code, entryPath, 'ts')
 	} else {
 		packageName = input.entry.packageName
 		const pkg = await loadPackage(packageName)
@@ -306,6 +387,10 @@ export async function buildModuleGraph(input: {
 	if (sealedStubNeeded) modules[SEALED_MODULE_PATH] = SEALED_MODULE_SOURCE
 	assertReachableImportsResolve(modules, entryPath, unreadable)
 
+	const npmSpecifiers = new Set<string>()
+	for (const path of loadableModules(modules, entryPath)) {
+		for (const specifier of npmByModule.get(path) ?? []) npmSpecifiers.add(specifier)
+	}
 	if (npmSpecifiers.size > 0) {
 		const resolved = await resolveNpmModules([...npmSpecifiers], input.npm)
 		for (const [path, source] of Object.entries(resolved.modules)) modules[path] = source

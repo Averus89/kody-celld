@@ -1,4 +1,11 @@
 import { lexImportSpecifiers, relativeImportCandidates } from '../execute/import-specifiers.ts'
+import {
+	isCodeModulePath,
+	jsxOptionsFromFiles,
+	stripTypes,
+	transpileKind,
+	type JsxOptions,
+} from '../execute/strip-types.ts'
 import { KodyError } from '../lib/errors.ts'
 
 // Mirrors kentcdodds/kody `package.json#kody` shapes for the surfaces this
@@ -464,21 +471,41 @@ export function resolvePackageExport(manifest: PackageManifest, exportName: stri
 }
 
 /**
+ * TypeScript and JSX are checked as they will run: compiled, so imports used
+ * only as types (erased, as tsc and esbuild do) need not resolve. A file
+ * sucrase cannot read is skipped here; running it names the compile error.
+ * Falling back to the raw source would re-lex broken TSX/JSX and refuse the
+ * save with the import lexer's message instead of sucrase's clearer one.
+ */
+function importSource(path: string, source: string, jsx: JsxOptions): string | null {
+	const kind = transpileKind(path)
+	if (!kind) return source
+	try {
+		return stripTypes(source, path, kind, jsx)
+	} catch {
+		return null
+	}
+}
+
+/**
  * kody-celld: static relative imports reached from the package's entry points
  * (exports, job entries, subscription handlers) must name a module in the
  * package, using the module graph's lookup (`x`, `x.js`, `.ts` as `.js`,
  * `x/index.js`; code and JSON only). celld links exactly those, so a broken
  * one is refused here instead of failing as `instantiate: <none>` after the
  * next restart. Files nothing reaches (tests, client code), dynamic
- * `import()`s, and TypeScript `import type` / `export type … from` are not
- * checked: celld never links them up front, a failed `import()` stays
- * catchable, and type-only imports are erased (kody skips them too). Imports
- * come from the lexer, so text in strings and comments is never checked.
+ * `import()`s, and imports a compiled TypeScript or JSX file no longer has
+ * (`import type`, imports used only as types) are not checked: celld never
+ * links them up front, a failed `import()` stays catchable, and type-only
+ * imports are erased (kody skips them too). TypeScript and JSX files are
+ * checked compiled, as they run. Imports come from the lexer, so text in
+ * strings and comments is never checked.
  */
 function assertRelativeImportsResolve(files: PackageFiles, entries: Array<string>) {
+	const jsx = jsxOptionsFromFiles(files)
 	const sources = new Map<string, string>()
 	for (const [file, source] of Object.entries(files)) {
-		if (/\.(?:m?js|ts|json)$/.test(file)) sources.set(normalizeModulePath(file), source)
+		if (isCodeModulePath(file) || file.endsWith('.json')) sources.set(normalizeModulePath(file), source)
 	}
 	const queue = [...entries]
 	const seen = new Set<string>()
@@ -488,8 +515,10 @@ function assertRelativeImportsResolve(files: PackageFiles, entries: Array<string
 		seen.add(path)
 		const source = sources.get(path)
 		if (source === undefined || path.endsWith('.json')) continue
+		const compiled = importSource(path, source, jsx)
+		if (compiled === null) continue
 		const base = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
-		for (const { specifier, kind, typeOnly } of lexImportSpecifiers(source, path)) {
+		for (const { specifier, kind, typeOnly } of lexImportSpecifiers(compiled, path)) {
 			if (kind !== 'static' || typeOnly) continue
 			if (!specifier.startsWith('./') && !specifier.startsWith('../') && !specifier.startsWith('/')) continue
 			let target: string
