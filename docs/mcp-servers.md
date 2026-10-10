@@ -65,10 +65,10 @@ kentcdodds/kody#3203).
 2. The user opens `authUrl` while signed in. The consent page names the server,
    where Continue opens (the authorization endpoint host) and how Kody will
    identify itself; **Continue** sends the browser to the provider. Kody uses
-   the server's `401` challenge (`WWW-Authenticate: Bearer resource_metadata=…,
-scope=…`), saved at add time, to find the authorization server and to
-   request that scope. That way servers that advertise their resource metadata
-   only in the challenge also work.
+   the server's `401` challenge (its `resource_metadata` and `scope`), saved at
+   add time, to find the authorization server and to request that scope, so
+   servers that advertise their resource metadata only in the challenge also
+   work.
 3. The provider redirects back to the callback
    (`{origin}/account/mcp-servers/oauth/callback`). Kody exchanges the code
    (PKCE S256), seals the tokens with your keyring, lists the tools, and lands

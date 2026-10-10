@@ -89,7 +89,7 @@ export function assertEndpointsOnIssuerOrigin(discovery: OAuthDiscoveryState) {
 		if (origin !== issuerOrigin) {
 			throw new KodyError(
 				'mcp_oauth_failed',
-				`Authorization server ${field} (${origin ?? value}) is on a different origin than its issuer (${issuerOrigin}).`,
+				`Authorization server ${field} (${origin ?? value.slice(0, 200)}) is on a different origin than its issuer (${issuerOrigin}).`,
 				{ status: 502 },
 			)
 		}
