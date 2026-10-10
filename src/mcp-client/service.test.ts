@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, it } from 'node:test'
+import { KodyError } from '../lib/errors.ts'
 import { buildMasterKeyring } from '../lib/crypto.ts'
 import { oauthPolicyFetch } from './client.ts'
 import { refreshMcpTokens } from './oauth.ts'
@@ -65,6 +66,8 @@ async function setup(serverOptions: Parameters<typeof startTestMcpServer>[0] = {
 			discovery: oauth.discovery(name),
 		}),
 		mcpServerOAuthBegin: async (input) => {
+			if (store.get(input.name)?.id !== input.serverId)
+				throw new KodyError('mcp_oauth_state_invalid', 'changed', { status: 400 })
 			if (input.client) await oauth.saveClient(input.name, input.client)
 			if (input.discovery) oauth.saveDiscovery(input.name, input.discovery)
 			return oauth.createPending({
@@ -72,6 +75,8 @@ async function setup(serverOptions: Parameters<typeof startTestMcpServer>[0] = {
 				serverName: input.name,
 				serverOrigin: input.serverOrigin,
 				serverUrl: input.serverUrl,
+				serverId: input.serverId,
+				clientId: input.clientId,
 				verifier: input.verifier,
 				redirectUri: input.redirectUri,
 			})
@@ -554,6 +559,126 @@ describe('OAuth servers', () => {
 		assert.equal(await oauth.tokens('oa'), null)
 		assert.equal(store.get('oa')!.auth.kind, 'bearer')
 		assert.equal(await store.authorization('oa'), 'Bearer tok')
+	})
+
+	it('the client metadata document path still completes through the fence (CIMD client id recorded)', async () => {
+		const { deps, server, store } = await setup({ oauth: { mode: 'metadata' } })
+		const httpsDeps = { ...deps, publicUrl: 'https://kody.example.com' }
+		await addMcpServer(httpsDeps, { name: 'oa', url })
+		const finished = await authorizeThroughBrowser(httpsDeps, server, 'oa')
+		assert.equal(finished.ok, true)
+		assert.equal(store.get('oa')!.status, 'ready')
+		assert.equal(store.get('oa')!.oauth!.clientId, 'https://kody.example.com/oauth/client-metadata.json')
+	})
+
+	it('authorizing a second time (issuer-stamped stored client, no savedClient) still completes', async () => {
+		for (const mode of ['dynamic', 'preregistered'] as const) {
+			const { deps, server, store, oauth } = await setup({
+				oauth: { mode, ...(mode === 'preregistered' ? { clients: { 'Iv1.abc': {} } } : {}) },
+			})
+			await addMcpServer(deps, { name: 'oa', url })
+			if (mode === 'preregistered')
+				await oauth.setPreregisteredClient('oa', { clientId: 'Iv1.abc', clientSecret: null })
+			assert.equal((await authorizeThroughBrowser(deps, server, 'oa')).ok, true, `${mode}: first authorization`)
+			assert.ok((await oauth.client('oa'))!.information.issuer, `${mode}: stored client is issuer-stamped`)
+			assert.equal((await authorizeThroughBrowser(deps, server, 'oa')).ok, true, `${mode}: second authorization`)
+			assert.equal(store.get('oa')!.status, 'ready')
+		}
+	})
+
+	it('a client changed between start and callback skips the token request entirely (#55)', async () => {
+		const { deps, server, oauth } = await setup({ oauth: { mode: 'dynamic' } })
+		await addMcpServer(deps, { name: 'oa', url })
+		const { authorizationUrl } = await startMcpOAuth(deps, 'oa')
+		const location = new URL((await server.fetch(authorizationUrl)).headers.get('location')!)
+		await oauth.setPreregisteredClient('oa', { clientId: 'other-client', clientSecret: null })
+		const finished = await finishMcpOAuth(deps, {
+			state: location.searchParams.get('state')!,
+			code: location.searchParams.get('code'),
+			error: null,
+			errorDescription: null,
+		})
+		assert.equal(finished.ok, false)
+		assert.match(finished.message ?? '', /changed while authorizing/)
+		assert.equal(server.oauth!.tokenRequests.filter((r) => r.grantType === 'authorization_code').length, 0)
+		assert.equal(await oauth.tokens('oa'), null)
+	})
+
+	it('a remove + re-add while authorization is starting is refused; no attempt is recorded for the new row (#50)', async () => {
+		const { deps, store } = await setup({ oauth: { mode: 'dynamic' } })
+		await addMcpServer(deps, { name: 'oa', url })
+		const begin = deps.cell.mcpServerOAuthBegin
+		const racing = {
+			...deps,
+			cell: {
+				...deps.cell,
+				mcpServerOAuthBegin: async (input: Parameters<typeof begin>[0]) => {
+					store.remove('oa')
+					await addMcpServer(deps, { name: 'oa', url })
+					return begin(input)
+				},
+			},
+		}
+		await assert.rejects(startMcpOAuth(racing, 'oa'), /mcp_oauth_state_invalid/)
+	})
+
+	it('a provider error on an attempt whose client changed does not park the server (#55)', async () => {
+		const { deps, store, oauth } = await setup({ oauth: { mode: 'dynamic' } })
+		await addMcpServer(deps, { name: 'oa', url })
+		const { authorizationUrl } = await startMcpOAuth(deps, 'oa')
+		const state = new URL(authorizationUrl).searchParams.get('state')!
+		await oauth.setPreregisteredClient('oa', { clientId: 'other-client', clientSecret: null })
+		const before = store.get('oa')!.lastError?.message
+		const finished = await finishMcpOAuth(deps, {
+			state,
+			code: null,
+			error: 'access_denied',
+			errorDescription: 'old attempt',
+		})
+		assert.equal(finished.ok, false)
+		assert.match(finished.message ?? '', /changed while authorizing/)
+		assert.equal(store.get('oa')!.lastError?.message, before, 'the stale attempt wrote nothing to the server')
+	})
+
+	it('remove and re-add at the same URL while the code exchange runs saves nothing (#50)', async () => {
+		const { deps, server, store, oauth } = await setup({ oauth: { mode: 'dynamic' } })
+		await addMcpServer(deps, { name: 'oa', url })
+		const callback = await consentAndHoldExchange(deps, server, 'oa')
+		const oldId = store.get('oa')!.id
+		store.remove('oa')
+		await addMcpServer(deps, { name: 'oa', url })
+		assert.notEqual(store.get('oa')!.id, oldId)
+		callback.release()
+		const finished = await callback.finished
+		assert.equal(finished.ok, false)
+		assert.match(finished.message ?? '', /changed while authorizing/)
+		assert.equal(await oauth.tokens('oa'), null)
+	})
+
+	it('an OAuth client reset while the code exchange runs saves no tokens (#55)', async () => {
+		const { deps, server, oauth } = await setup({ oauth: { mode: 'dynamic' } })
+		await addMcpServer(deps, { name: 'oa', url })
+		const callback = await consentAndHoldExchange(deps, server, 'oa')
+		oauth.clearClient('oa')
+		callback.release()
+		const finished = await callback.finished
+		assert.equal(finished.ok, false)
+		assert.match(finished.message ?? '', /changed while authorizing/)
+		assert.equal(await oauth.tokens('oa'), null)
+		assert.equal(await oauth.client('oa'), null, 'the reset client stays reset')
+	})
+
+	it('an OAuth client replaced while the code exchange runs saves no tokens from the old client (#55)', async () => {
+		const { deps, server, oauth } = await setup({ oauth: { mode: 'dynamic' } })
+		await addMcpServer(deps, { name: 'oa', url })
+		const callback = await consentAndHoldExchange(deps, server, 'oa')
+		await oauth.setPreregisteredClient('oa', { clientId: 'other-client', clientSecret: null })
+		callback.release()
+		const finished = await callback.finished
+		assert.equal(finished.ok, false)
+		assert.match(finished.message ?? '', /changed while authorizing/)
+		assert.equal(await oauth.tokens('oa'), null)
+		assert.equal((await oauth.client('oa'))!.information.client_id, 'other-client')
 	})
 
 	it('reconnect on a grant without a refresh token keeps the grant', async () => {
