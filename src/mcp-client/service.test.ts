@@ -388,10 +388,28 @@ describe('OAuth servers', () => {
 		const { deps, server } = await setup({ oauth: { mode: 'dynamic' } })
 		await addMcpServer(deps, { name: 'oa', url })
 		const described = await describeMcpOAuth(deps, 'oa')
+		assert.equal(
+			described.formActionOrigin,
+			'http://172.30.1.5',
+			'the consent page must allow the LAN authorize origin in form-action',
+		)
 		assert.equal(described.clientMode, 'dynamic')
 		assert.equal(described.authorizationServerHost, '172.30.1.5')
 		assert.equal(described.canContinue, true)
-		const finished = await authorizeThroughBrowser(deps, server, 'oa')
+		const { authorizationUrl } = await startMcpOAuth(deps, 'oa')
+		assert.equal(
+			described.formActionOrigin,
+			new URL(authorizationUrl).origin,
+			'form-action origin must match the Continue redirect origin',
+		)
+		const back = await server.fetch(authorizationUrl)
+		const location = new URL(back.headers.get('location')!)
+		const finished = await finishMcpOAuth(deps, {
+			state: location.searchParams.get('state')!,
+			code: location.searchParams.get('code'),
+			error: null,
+			errorDescription: null,
+		})
 		assert.deepEqual({ ok: finished.ok, name: finished.name }, { ok: true, name: 'oa' })
 		const sum = await callMcpTool(deps, { server: 'oa', tool: 'add', args: { a: 1, b: 2 }, packageName: null })
 		assert.equal(sum.content[0]!.text, '3')
