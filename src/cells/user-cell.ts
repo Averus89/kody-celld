@@ -40,6 +40,12 @@ import {
 	userPackagesTableDdl,
 } from '../packages/package-files-store.ts'
 import type { IntegrationConfig, IntegrationUsage } from '../integrations/oauth.ts'
+import type { OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
+import type { OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js'
+import { oauthPolicyFetch } from '../mcp-client/client.ts'
+import { refreshMcpTokens } from '../mcp-client/oauth.ts'
+import { McpOAuthStore, mcpOAuthSchema, type McpOAuthClient } from '../mcp-client/oauth-store.ts'
+import { mcpConfigFromEnv } from '../mcp-client/policy.ts'
 import { McpServerStore, mcpServerSchema, type McpDiscoveryOutcome, type McpServerRecord } from '../mcp-client/store.ts'
 import {
 	IntegrationStore,
@@ -550,6 +556,7 @@ export class UserCell extends DurableObject<Env> {
 		this.ctx.storage.sql.exec(integrationSchema)
 		this.ctx.storage.sql.exec(secretProviderSchema)
 		this.ctx.storage.sql.exec(mcpServerSchema)
+		this.ctx.storage.sql.exec(mcpOAuthSchema)
 		this.limits = limitsFromEnv(env)
 		this.defaultQuotas = quotasFromEnv(env)
 		this.integrations = new IntegrationStore({
@@ -560,10 +567,16 @@ export class UserCell extends DurableObject<Env> {
 			fetch: (input, init) => fetch(input, init),
 		})
 		this.secretProviders = new SecretProviderStore(this.ctx.storage.sql)
+		this.mcpOAuth = new McpOAuthStore({
+			sql: this.ctx.storage.sql,
+			userId: () => this.userId,
+			keyring: () => this.keyring(),
+		})
 		this.mcpServers = new McpServerStore({
 			sql: this.ctx.storage.sql,
 			userId: () => this.userId,
 			keyring: () => this.keyring(),
+			oauth: this.mcpOAuth,
 		})
 		const secretColumns = this.ctx.storage.sql
 			.exec<{ name: string }>(`SELECT name FROM pragma_table_info('secrets')`)
@@ -591,6 +604,7 @@ export class UserCell extends DurableObject<Env> {
 	private readonly defaultQuotas: Quotas
 	private readonly integrations: IntegrationStore
 	private readonly secretProviders: SecretProviderStore
+	private readonly mcpOAuth: McpOAuthStore
 	private readonly mcpServers: McpServerStore
 	private readonly runTriage: RunTriageStore
 
@@ -1224,8 +1238,77 @@ export class UserCell extends DurableObject<Env> {
 		return this.mcpServers.remove(name)
 	}
 
-	async mcpServerAuthorization(name: string): Promise<string | null> {
-		return this.mcpServers.authorization(name)
+	/** The call's Authorization: the sealed bearer, or an OAuth access token refreshed (serialized here) when expiring or forced. */
+	async mcpServerAuthorization(
+		name: string,
+		options: { forceRefresh?: boolean; staleAccessToken?: string } = {},
+	): Promise<string | null> {
+		return this.mcpServers.callAuthorization(name, {
+			forceRefresh: options.forceRefresh === true,
+			staleAccessToken: options.staleAccessToken,
+			refresher: (input) => refreshMcpTokens({ ...input, fetchFn: oauthPolicyFetch(mcpConfigFromEnv(this.env)) }),
+		})
+	}
+
+	// The OAuth RPCs below are mirrored by the fake cell in src/mcp-client/service.test.ts; keep both in sync.
+	async mcpServerOAuthLoad(name: string) {
+		return { client: await this.mcpOAuth.client(name), discovery: this.mcpOAuth.discovery(name) }
+	}
+
+	async mcpServerOAuthBegin(input: {
+		name: string
+		state: string
+		verifier: string
+		redirectUri: string
+		serverOrigin: string
+		serverUrl: string
+		client: McpOAuthClient | null
+		discovery: OAuthDiscoveryState | null
+	}) {
+		if (!this.mcpServers.get(input.name)) {
+			throw new KodyError('mcp_server_not_found', `MCP server "${input.name}" was not found.`, { status: 404 })
+		}
+		if (input.client) await this.mcpOAuth.saveClient(input.name, input.client)
+		if (input.discovery) this.mcpOAuth.saveDiscovery(input.name, input.discovery)
+		return this.mcpOAuth.createPending({
+			state: input.state,
+			serverName: input.name,
+			serverOrigin: input.serverOrigin,
+			serverUrl: input.serverUrl,
+			verifier: input.verifier,
+			redirectUri: input.redirectUri,
+		})
+	}
+
+	async mcpServerOAuthClaim(state: string) {
+		const claimed = await this.mcpOAuth.claimPending(state)
+		if (!claimed) return null
+		const name = claimed.pending.serverName
+		return { ...claimed, client: await this.mcpOAuth.client(name), discovery: this.mcpOAuth.discovery(name) }
+	}
+
+	async mcpServerOAuthComplete(input: {
+		name: string
+		serverOrigin: string
+		serverUrl: string
+		tokens: OAuthTokens
+		savedClient: OAuthClientInformationMixed | null
+	}) {
+		return this.mcpServers.completeOAuth(input)
+	}
+
+	async mcpServerOAuthSetClient(input: { name: string; clientId: string; clientSecret: string | null }) {
+		if (!this.mcpServers.get(input.name)) {
+			throw new KodyError('mcp_server_not_found', `MCP server "${input.name}" was not found.`, { status: 404 })
+		}
+		await this.mcpOAuth.setPreregisteredClient(input.name, {
+			clientId: input.clientId,
+			clientSecret: input.clientSecret,
+		})
+	}
+
+	async mcpServerOAuthClearClient(name: string) {
+		this.mcpOAuth.clearClient(name)
 	}
 
 	// -------------------------------------------------------- secret providers

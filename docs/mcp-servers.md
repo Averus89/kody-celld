@@ -5,8 +5,9 @@ LAN tool box, any hosted MCP endpoint) once, and `execute` code and packages
 call its tools as `kody.mcp['name'].tool(input)`. The call runs host-side in
 your user cell, so the sandbox never sees the server's bearer token.
 
-Only the Streamable HTTP transport is supported, with an optional static bearer
-token. Servers are per user and are listed on `/account/mcp-servers`.
+Only the Streamable HTTP transport is supported. A server authenticates with
+an optional static bearer token or with OAuth (see [OAuth servers](#oauth-servers)).
+Servers are per user and are listed on `/account/mcp-servers`.
 
 ## Add a server
 
@@ -43,6 +44,130 @@ re-lists the tools, `mcpServerSetEnabled({ name, enabled })` turns a server
 off and on, and `mcpServerRemove({ name })` deletes it. The management
 capabilities are refused from package code (`forbidden_from_package`);
 `mcpServerList` works everywhere.
+
+## OAuth servers
+
+A server that answers `401` without a bearer token and advertises an OAuth
+authorization server (RFC 9728 protected resource metadata) is added as an
+OAuth server. A bearer token and OAuth are exclusive on celld: a server added
+with `bearerToken` never starts OAuth (hosted Kody allows both; see
+kentcdodds/kody#3203).
+
+### Flow
+
+1. `mcpServerAdd({ name, url })` saves the server with
+   `status: 'authenticating'` and returns an `authUrl`
+   (`{origin}/account/mcp-servers/<name>/authorize`) plus a `nextStep` that
+   says what to do. `authUrl` is set only while `status` is `authenticating`
+   (matching hosted). Calls fail with `mcp_server_unauthorized` (with the
+   authorize link and the reason) until the user authorizes; so do calls to an
+   OAuth server in `status: 'error'` that has no grant yet.
+2. The user opens `authUrl` while signed in. The consent page names the server,
+   where Continue opens (the authorization endpoint host) and how Kody will
+   identify itself; **Continue** sends the browser to the provider.
+3. The provider redirects back to the callback
+   (`{origin}/account/mcp-servers/oauth/callback`). Kody exchanges the code
+   (PKCE S256), seals the tokens with your keyring, lists the tools, and lands
+   on `/account/mcp-servers` with a success or error notice. A pending
+   authorization expires after 15 minutes and works once: a replayed
+   callback changes nothing, and an unknown `state` is refused
+   (`mcp_oauth_state_invalid`).
+4. The server is `ready`; `mcpServerList` shows `authUrl: null` and
+   `hasRefreshToken`. Capability results do not include `oauthClientMode` or an
+   `oauth` summary (those stay on the account and consent pages, matching
+   hosted). Tokens, client secrets and PKCE verifiers never appear in capability
+   results, errors, run history, logs or HTML.
+
+If the server is removed or replaced (another URL including a same-origin path
+change, or a bearer token) while the provider round trip is running, the
+callback saves nothing and reports an error; start again from the new server's
+`authUrl`.
+
+`{origin}` is always the origin of `KODY_PUBLIC_URL`, never the request host.
+
+### How Kody identifies itself
+
+Kody picks the first client mode that applies, per server:
+
+1. **Pre-registered client:** a client id (and optional secret) you entered on
+   `/account/mcp-servers` (see below).
+2. **Client metadata document:** when `KODY_PUBLIC_URL` is `https:` and the
+   authorization server advertises `client_id_metadata_document_supported`,
+   the client id is `{origin}/oauth/client-metadata.json`, which Kody serves
+   publicly. On an `http:` origin the document is not served (`404`).
+3. **Dynamic client registration** (RFC 7591), when the authorization server
+   has a `registration_endpoint`. The registered client is stored and reused.
+4. Otherwise the server stays in `status: 'error'` with a message saying it
+   needs a pre-registered client; starting an authorization fails with
+   `mcp_oauth_client_required`.
+
+### What to allow at the provider
+
+`mcpServerAdd`, `mcpServerList` and `mcpServerReconnect` return the values a
+provider may ask you to allow:
+
+| Field                    | Value                                                       |
+| ------------------------ | ----------------------------------------------------------- |
+| `oauthClientOrigin`      | `{origin}`                                                  |
+| `oauthCallbackUrl`       | `{origin}/account/mcp-servers/oauth/callback`               |
+| `oauthClientMetadataUrl` | `{origin}/oauth/client-metadata.json`, or `null` on `http:` |
+
+### LAN authorization servers
+
+Every OAuth request (discovery, registration, token exchange, refresh) goes
+through the same host policy as MCP calls. If the authorization server is on a
+private or `http:` host, list **its** host in `KODY_MCP_ALLOW_PRIVATE_HOSTS`
+too, not only the MCP server's host. Requests that carry codes, verifiers or
+secrets follow only same-origin `307`/`308` redirects.
+
+Home Assistant identifies clients by URL: its `client_id` is Kody's metadata
+document URL. That needs an `https:` `KODY_PUBLIC_URL` that Home Assistant
+can reach, so it can fetch `{origin}/oauth/client-metadata.json`.
+
+### Pre-registered client (GitHub)
+
+For providers without registration or metadata documents, such as GitHub:
+
+1. Create an OAuth app at the provider with the callback URL set to
+   `oauthCallbackUrl`.
+2. On `/account/mcp-servers`, open **OAuth client** on the server's row, enter
+   the client id and (optional) secret, and save. The secret is sealed with
+   your keyring and never shown again.
+3. Open the server's `authUrl` (or **Authorize** on the row) to authorize.
+
+The client can only be set or removed on the account page, not from code.
+
+### Refresh
+
+Kody refreshes the access token automatically when it is about to expire, and
+once (followed by one retry) when a call gets a `401`. Refreshes are
+serialized per server, so concurrent calls never race a rotating refresh
+token. When the provider rejects the refresh token, the server goes back to
+`authenticating` with an `authUrl`; the user reauthorizes. `mcpServerReconnect({
+name })` forces a refresh when the grant has a refresh token (a grant without
+one, such as a GitHub OAuth app's, is kept as is), re-lists the tools, and
+returns the current `status` and `authUrl`. Like the other management
+capabilities, it is refused from package code.
+
+### Troubleshooting
+
+- **The provider rejects the redirect URI or the origin** (`invalid_request`,
+  "redirect_uri mismatch", "origin not allowed"): allow the three values from
+  [What to allow at the provider](#what-to-allow-at-the-provider) there, then
+  authorize again.
+- **"needs a pre-registered OAuth client"** (`status: 'error'`, or
+  `mcp_oauth_client_required` when starting): the authorization server offers
+  neither registration nor client metadata documents. Create an OAuth app at
+  the provider and enter it under **OAuth client** (see
+  [Pre-registered client](#pre-registered-client-github)).
+- **A LAN authorization server is refused** (`mcp_host_not_allowed` on the
+  consent page, or a `lastError` naming the authorization server's host): add the
+  authorization server's host to `KODY_MCP_ALLOW_PRIVATE_HOSTS`, not only the
+  MCP server's host (see [LAN authorization servers](#lan-authorization-servers)).
+- **The refresh token was rejected** (`status: 'authenticating'`, "The refresh
+  token was rejected; authorize again"): open `authUrl` and authorize again.
+  After a transient refresh failure (`status: 'error'`, tokens kept),
+  `mcpServerReconnect({ name })` retries the refresh and re-lists the tools.
 
 ## Call tools
 
@@ -171,28 +296,35 @@ timeout. See [operations.md](./operations.md) for every variable.
 
 ## Errors
 
-| Code                   | HTTP | When                                                                                                                                                                                                          |
-| ---------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mcp_server_not_found` | 404  | No server with that name.                                                                                                                                                                                     |
-| `mcp_server_exists`    | 409  | `mcpServerAdd` on a taken name without `replace: true`.                                                                                                                                                       |
-| `mcp_server_disabled`  | 409  | The server is turned off.                                                                                                                                                                                     |
-| `mcp_server_locked`    | 403  | The server is locked and the run's entry package is not granted, or `mcpServerAdd({ replace: true })` asked for a looser `usage`.                                                                             |
-| `mcp_tool_not_found`   | 404  | The server has no tool with that name (try `mcpServerRefresh`).                                                                                                                                               |
-| `mcp_host_not_allowed` | 403  | A private host or plain `http:` URL not in `KODY_MCP_ALLOW_PRIVATE_HOSTS`, a host that resolves to a private address not allowed there, or a host that could not be resolved through `KODY_DNS_RESOLVER_URL`. |
-| `mcp_call_failed`      | 502  | Transport or protocol failure, timeout, or an HTTP error from the server.                                                                                                                                     |
-| `mcp_result_too_large` | 413  | The result is over `KODY_MCP_CONTENT_LIMIT_BYTES`.                                                                                                                                                            |
-| `quota_exceeded`       | 429  | `mcpServerAdd` of a new name would exceed `KODY_QUOTA_MCP_SERVERS`.                                                                                                                                           |
-| `config_error`         | 500  | `KODY_MCP_ALLOW_PRIVATE_HOSTS`, `KODY_MCP_CALL_TIMEOUT_MS` or `KODY_DNS_RESOLVER_URL` is invalid.                                                                                                             |
+| Code                        | HTTP | When                                                                                                                                                                                                          |
+| --------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mcp_server_not_found`      | 404  | No server with that name.                                                                                                                                                                                     |
+| `mcp_server_exists`         | 409  | `mcpServerAdd` on a taken name without `replace: true`.                                                                                                                                                       |
+| `mcp_server_disabled`       | 409  | The server is turned off.                                                                                                                                                                                     |
+| `mcp_server_locked`         | 403  | The server is locked and the run's entry package is not granted, or `mcpServerAdd({ replace: true })` asked for a looser `usage`.                                                                             |
+| `mcp_tool_not_found`        | 404  | The server has no tool with that name (try `mcpServerRefresh`).                                                                                                                                               |
+| `mcp_host_not_allowed`      | 403  | A private host or plain `http:` URL not in `KODY_MCP_ALLOW_PRIVATE_HOSTS`, a host that resolves to a private address not allowed there, or a host that could not be resolved through `KODY_DNS_RESOLVER_URL`. |
+| `mcp_call_failed`           | 502  | Transport or protocol failure, timeout, or an HTTP error from the server.                                                                                                                                     |
+| `mcp_result_too_large`      | 413  | The result is over `KODY_MCP_CONTENT_LIMIT_BYTES`.                                                                                                                                                            |
+| `mcp_server_unauthorized`   | 401  | An OAuth server has no grant yet, or the provider rejected it; open the server's `authUrl`.                                                                                                                   |
+| `mcp_oauth_state_invalid`   | 400  | The OAuth callback's `state` is unknown, expired, another user's, or the server's origin changed.                                                                                                             |
+| `mcp_oauth_client_required` | 409  | No client mode applies: no pre-registered client, no client metadata document support, no `registration_endpoint`.                                                                                            |
+| `mcp_oauth_failed`          | 502  | The authorization server misbehaved: no authorization server advertised, a bad authorize URL, or a failed code exchange.                                                                                      |
+| `quota_exceeded`            | 429  | `mcpServerAdd` of a new name would exceed `KODY_QUOTA_MCP_SERVERS`.                                                                                                                                           |
+| `config_error`              | 500  | `KODY_MCP_ALLOW_PRIVATE_HOSTS`, `KODY_MCP_CALL_TIMEOUT_MS` or `KODY_DNS_RESOLVER_URL` is invalid.                                                                                                             |
 
 Inside `execute` the code is the prefix of the thrown error's message
 (`mcp_server_locked: …`).
 
 ## Not yet
 
-- OAuth-protected MCP servers (planned as a follow-up).
 - MCP resources and prompts; only tools are supported.
 - The legacy HTTP+SSE transport; servers must speak Streamable HTTP.
 
 `smoke/mcp-servers.mjs` covers add, search, ad hoc and package calls, lock,
 disable, refresh, the host refusal, the account page and remove, against a real
-SDK server (`smoke/mcp-mock-server.mjs`).
+SDK server (`smoke/mcp-mock-server.mjs`). `smoke/mcp-oauth.mjs` covers an OAuth
+server end to end against `smoke/mcp-oauth-mock.mjs` (dynamic client
+registration): add, consent page, provider, callback (and a replayed and an
+unknown callback), calls, refresh on an expired access token, a revoked grant,
+`mcpServerReconnect`, and remove, checking that no token leaks.

@@ -219,10 +219,14 @@ export type IntegrationView = {
 export type McpServerView = {
 	name: string
 	host: string
-	status: 'ready' | 'error'
+	status: 'ready' | 'error' | 'authenticating'
 	lastError: string | null
 	enabled: boolean
-	authKind: 'none' | 'bearer'
+	authKind: 'none' | 'bearer' | 'oauth'
+	authorizeHref: string | null
+	hasRefreshToken: boolean
+	/** The stored OAuth client; the secret itself is never exposed. */
+	oauthClient: { clientId: string; hasSecret: boolean; mode: string } | null
 	usage: { mode: 'any' | 'packages'; packages: Array<string> }
 	tools: Array<{ name: string; description: string }>
 }
@@ -479,6 +483,17 @@ export type AppLoaderData =
 			page: 'accountMcpServers'
 			csrf: string
 			servers: Array<McpServerView>
+	  }
+	| {
+			page: 'accountMcpServerAuthorize'
+			csrf: string
+			name: string
+			url: string
+			authorizationServerHost: string | null
+			clientMode: 'preregistered' | 'metadata' | 'dynamic' | null
+			scopes: Array<string>
+			canContinue: boolean
+			message: string | null
 	  }
 	| {
 			page: 'accountEmail'

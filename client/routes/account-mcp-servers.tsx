@@ -6,7 +6,17 @@ import {
 	AccountManagementShell,
 	AccountPageHeader,
 } from './account-management-components.tsx'
-import { ActionForm, Badge, Code, DangerForm, Muted } from './form-controls.tsx'
+import {
+	ActionForm,
+	Badge,
+	Code,
+	CsrfInput,
+	DangerForm,
+	Field,
+	Hidden,
+	Muted,
+	SubmitButton,
+} from './form-controls.tsx'
 import { RecordTable } from './record-table.tsx'
 
 type Data = Extract<AppLoaderData, { page: 'accountMcpServers' }>
@@ -29,7 +39,7 @@ export function AccountMcpServers(
 					<RecordTable
 						mode="none"
 						ariaLabel="MCP servers"
-						emptyLabel="No MCP servers. Add one with: await kody.mcpServerAdd({ name: 'home', url: 'https://…/mcp', bearerToken: '…' })"
+						emptyLabel="No MCP servers. Add one with: await kody.mcpServerAdd({ name: 'home', url: 'https://…/mcp', bearerToken: '…' }). OAuth servers show an Authorize link."
 						countLabel={`${d.servers.length} total`}
 						columns={[
 							{ key: 'name', label: 'Name', primary: true },
@@ -47,7 +57,11 @@ export function AccountMcpServers(
 										<br />
 										<Muted small>
 											{s.host} ·{' '}
-											{s.authKind === 'bearer' ? 'bearer token' : 'no auth'}
+											{s.authKind === 'bearer'
+												? 'bearer token'
+												: s.authKind === 'oauth'
+													? `OAuth${s.hasRefreshToken ? '' : ' (no refresh token)'}`
+													: 'no auth'}
 										</Muted>
 									</span>
 								),
@@ -68,6 +82,14 @@ export function AccountMcpServers(
 											<>
 												<br />
 												<Muted small>{s.lastError}</Muted>
+											</>
+										) : null}
+										{s.authorizeHref ? (
+											<>
+												<br />
+												<a href={s.authorizeHref} rel="noopener noreferrer">
+													Authorize
+												</a>
 											</>
 										) : null}
 									</span>
@@ -137,6 +159,55 @@ export function AccountMcpServers(
 											fields={{ action: 'remove', name: s.name }}
 											label="Remove"
 										/>
+										{s.authKind !== 'bearer' ? (
+											<details>
+												<summary>OAuth client</summary>
+												{s.oauthClient?.mode === 'preregistered' ? (
+													<span>
+														<Code>{s.oauthClient.clientId}</Code>{' '}
+														<Muted small>
+															{s.oauthClient.hasSecret
+																? 'secret set'
+																: 'no secret'}
+														</Muted>{' '}
+														<DangerForm
+															action={action}
+															csrf={d.csrf}
+															fields={{
+																action: 'oauth_client_remove',
+																name: s.name,
+															}}
+															label="Remove OAuth client"
+														/>
+													</span>
+												) : (
+													<form method="post" action={action}>
+														<CsrfInput token={d.csrf} />
+														<Hidden name="action" value="oauth_client_set" />
+														<Hidden name="name" value={s.name} />
+														<Field
+															label="Client ID"
+															name="clientId"
+															id={`client-id-${s.name}`}
+															required
+															maxlength={512}
+															autocomplete="off"
+														/>
+														<Field
+															label="Client secret (optional)"
+															name="clientSecret"
+															id={`client-secret-${s.name}`}
+															type="password"
+															maxlength={4096}
+															autocomplete="off"
+														/>
+														<SubmitButton variant="secondary">
+															Save OAuth client
+														</SubmitButton>
+													</form>
+												)}
+											</details>
+										) : null}
 									</span>
 								),
 							},
