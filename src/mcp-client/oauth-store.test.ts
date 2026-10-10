@@ -398,4 +398,14 @@ describe('McpOAuthStore', () => {
 			.map((row) => row.name)
 		assert.ok(columns.includes('server_id') && columns.includes('client_id'))
 	})
+
+	it('saveChallenge keeps one line, caps at 2 KB, and null clears (#49)', async () => {
+		const { store } = await makeOAuth()
+		store.saveChallenge('home', 'Bearer scope="a"\r\nscope="b"')
+		assert.equal(store.challenge('home'), 'Bearer scope="a" scope="b"')
+		store.saveChallenge('home', `Bearer scope="${'x'.repeat(3000)}"`)
+		assert.equal(store.challenge('home')!.length, 2048)
+		store.saveChallenge('home', null)
+		assert.equal(store.challenge('home'), null)
+	})
 })

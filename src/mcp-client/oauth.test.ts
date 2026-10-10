@@ -241,4 +241,25 @@ describe('endpoint origins (#53)', () => {
 			)
 		})
 	}
+
+	it('refresh refuses cached discovery whose token_endpoint is off the issuer origin', async () => {
+		await assert.rejects(
+			refreshMcpTokens({
+				client: { client_id: 'c' },
+				refreshToken: 'rt',
+				discovery: {
+					authorizationServerUrl: 'http://172.30.1.5',
+					authorizationServerMetadata: {
+						issuer: 'http://172.30.1.5',
+						authorization_endpoint: 'http://172.30.1.5/authorize',
+						token_endpoint: 'http://172.30.1.6/token',
+						response_types_supported: ['code'],
+						code_challenge_methods_supported: ['S256'],
+					},
+				} as never,
+				fetchFn: fetch,
+			}),
+			/mcp_oauth_failed[\s\S]*token_endpoint .*different origin/,
+		)
+	})
 })
