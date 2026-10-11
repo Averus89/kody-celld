@@ -55,8 +55,9 @@ through a sync lock now and a `@kody/core` package later.
    [#63](https://github.com/kentcdodds/kody-celld/issues/63)); this doc records
    the decision.
 5. **One private-host allowlist.** Collapse the four private-host allowlist
-   settings into a single `KODY_PRIVATE_HOSTS` (or equivalent). Same note:
-   implementation may land separately; the product rule is one list.
+   settings into a single `KODY_PRIVATE_HOSTS` (or equivalent). Landed in
+   [#66](https://github.com/kentcdodds/kody-celld/pull/66); this doc records
+   the decision.
 
 ## What we share with hosted Kody
 

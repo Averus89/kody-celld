@@ -73,11 +73,11 @@ SQLite instead of Qdrant.
 
 ```sh
 KODY_AI_PROVIDER=openai
-KODY_AI_API_KEY=<your OpenAI key, never committed>
-# embeddings default to the same endpoint; override to split chat and embed:
-# KODY_AI_EMBED_BASE_URL=http://host.docker.internal:11434/v1
-# KODY_AI_EMBED_MODEL=nomic-embed-text
-# KODY_AI_EMBED_DIMENSIONS=768
+KODY_AI_BASE_URL=https://openrouter.ai/api/v1   # any OpenAI-compatible API
+KODY_AI_API_KEY=<your key, never committed>
+KODY_AI_EMBED_PROVIDER=openai
+KODY_AI_EMBED_BASE_URL=https://api.openai.com/v1
+KODY_AI_EMBED_API_KEY=<your OpenAI key>
 ```
 
 **Fleet**: the same variables go in `.env` beside the fleet values; the `deploy`
