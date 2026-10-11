@@ -270,3 +270,46 @@ describe('redactSecrets / httpStatusOf', () => {
 		assert.equal(httpStatusOf(error), 401)
 	})
 })
+
+describe('DoH lookups per MCP call (#47)', () => {
+	it('a whole discovery makes one A and one AAAA query for its host, and the next call resolves again', async () => {
+		const server = startTestMcpServer({
+			bearer: 'tok',
+			tools: [{ name: 'ping', handler: () => ({ content: [], isError: false }) }],
+		})
+		const dns: Array<string> = []
+		const counted = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const u = new URL(input instanceof Request ? input.url : String(input))
+			if (u.hostname === 'cloudflare-dns.com') dns.push(`${u.searchParams.get('name')}/${u.searchParams.get('type')}`)
+			return server.fetch(input, init)
+		}) as typeof fetch
+		const publicConfig = mcpConfigFromEnv({})
+		const target = { url: 'https://mcp.example.com/mcp', authorization: 'Bearer tok' }
+		const found = await discoverServer(target, { config: publicConfig, fetch: counted })
+		assert.equal(found.tools.length, 1)
+		assert.ok(server.requests.length >= 2, 'discovery made several requests to the same host')
+		assert.deepEqual([...dns].sort(), ['mcp.example.com/A', 'mcp.example.com/AAAA'])
+		await discoverServer(target, { config: publicConfig, fetch: counted })
+		assert.equal(dns.length, 4, 'no caching across calls')
+	})
+})
+
+describe('DoH lookups across a redirect (#47)', () => {
+	it('a redirect back to the same host reuses the first hop answer', async () => {
+		const dns: Array<string> = []
+		const base = (async (input: RequestInfo | URL) => {
+			const u = new URL(input instanceof Request ? input.url : String(input))
+			if (u.hostname === 'cloudflare-dns.com') {
+				dns.push(`${u.searchParams.get('name')}/${u.searchParams.get('type')}`)
+				const type = u.searchParams.get('type')
+				return Response.json({ Status: 0, Answer: type === 'A' ? [{ type: 1, data: '93.184.216.34' }] : [] })
+			}
+			if (u.pathname === '/old') return new Response(null, { status: 307, headers: { location: '/new' } })
+			return new Response('ok')
+		}) as typeof fetch
+		const f = createPolicyFetch(mcpConfigFromEnv({}), { authorization: null, base })
+		const res = await f('https://mcp.example.com/old', { method: 'POST', body: '{}' })
+		assert.equal(await res.text(), 'ok')
+		assert.deepEqual([...dns].sort(), ['mcp.example.com/A', 'mcp.example.com/AAAA'])
+	})
+})
