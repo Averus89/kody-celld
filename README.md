@@ -11,27 +11,27 @@ surface production Kody gets from Cloudflare, provided here as a self-hosted
 built-in, a generic adapter for a service you already run, or both. See the
 [provision matrix](./docs/known-gaps.md) for how each piece is provided.
 
-| Surface                                                            | Status                                                                                                                                                                                        |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| MCP `search` + `execute` (streamable HTTP, JSON-RPC)               | Working, smoke-tested                                                                                                                                                                         |
-| Packages (save local / in-memory, run, import)                     | Working, smoke-tested (`kody:@scope/pkg/export`, `packageStorage`)                                                                                                                            |
-| Secrets (encrypted store + host-gated injection)                   | Working, smoke-tested (`{{secret:name}}`, `{{secret-basic:...}}`)                                                                                                                             |
-| Jobs (package-owned cron / interval / once)                        | Working, smoke-tested against the real celld cron trigger                                                                                                                                     |
-| Docker: single node (NAS / home server) and fleet                  | Working, smoke-tested (`compose.yaml`, `compose.fleet.yaml` + MinIO + Caddy)                                                                                                                  |
-| Master-key rotation                                                | Working, smoke-tested (`KODY_MASTER_KEY_PREVIOUS` + `POST /admin/secrets/rekey`)                                                                                                              |
-| Limits, quotas, `usageGet`, admin audit log                        | Working, smoke-tested ([docs/operations.md](./docs/operations.md))                                                                                                                            |
-| AI chat/embeddings (Ollama, LM Studio, vLLM, OpenAI, Anthropic, …) | Working, smoke-tested adapters ([docs/ai.md](./docs/ai.md))                                                                                                                                   |
-| Memories (`metaMemory*`) + semantic search                         | Working, smoke-tested: FTS5 + sqlite-vec built in, Qdrant adapter, optional LLM re-rank ([docs/ai.md](./docs/ai.md))                                                                          |
-| Blob storage (`blob*`, raw HTTP routes, signed links)              | Working, smoke-tested: celld R2 binding built in, direct S3 adapter ([docs/blobs.md](./docs/blobs.md))                                                                                        |
-| Browser rendering (content, screenshots, PDF)                      | Working, smoke-tested adapters: self-hosted browserless overlay or Cloudflare ([docs/browser.md](./docs/browser.md))                                                                          |
-| npm imports inside `execute`                                       | Working, smoke-tested: durable module cache, esm.sh or a self-hosted CDN overlay ([docs/npm.md](./docs/npm.md))                                                                               |
-| Email (inboxes, send/reply, subscriptions)                         | Working, smoke-tested: self-hosted SMTP `mail-bridge` overlay + Postmark/Mailgun/SendGrid/Resend/Cloudflare adapters ([docs/email.md](./docs/email.md))                                       |
-| Package inbound webhooks (mint/rotate, HMAC, replay, deliveries)   | Working, smoke-tested ([docs/webhooks.md](./docs/webhooks.md))                                                                                                                                |
-| OAuth integrations (`{{integration-token:…}}`)                     | Working, smoke-tested: bring-your-own OAuth app, PKCE connect, encrypted tokens, host-side refresh ([docs/integrations.md](./docs/integrations.md))                                           |
-| Provider-backed secrets (`{{secret/<provider>:…}}`)                | Working, smoke-tested: vault packages run sealed, values injected only at the gateway ([docs/secret-providers.md](./docs/secret-providers.md))                                                |
-| MCP OAuth 2.1 authorization server (DCR + PKCE, refresh rotation)  | Working, smoke-tested: MCP clients connect with no token pasting ([docs/mcp-oauth.md](./docs/mcp-oauth.md))                                                                                   |
-| Sign-in + web UI (account pages, operator console)                 | Working, smoke-tested: password / invite / magic-link sign-in, tokens, clients, secrets, packages, jobs, runs, inbox ([docs/web-ui.md](./docs/web-ui.md))                                     |
-| Install packages from GitHub / URL, community catalog              | Working, smoke-tested: `packageInstall` with host allowlist + SSRF guard, per-install `/community` catalog ([docs/packages.md](./docs/packages.md), [docs/community.md](./docs/community.md)) |
+| Surface                                                             | Status                                                                                                                                                                                        |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| MCP `search` + `execute` (streamable HTTP, JSON-RPC)                | Working, smoke-tested                                                                                                                                                                         |
+| Packages (save local / in-memory, run, import)                      | Working, smoke-tested (`kody:@scope/pkg/export`, `packageStorage`)                                                                                                                            |
+| Secrets (encrypted store + host-gated injection)                    | Working, smoke-tested (`{{secret:name}}`, `{{secret-basic:...}}`)                                                                                                                             |
+| Jobs (package-owned cron / interval / once)                         | Working, smoke-tested against the real celld cron trigger                                                                                                                                     |
+| Docker: single node (NAS / home server) and fleet                   | Working, smoke-tested (`compose.yaml`, `compose.fleet.yaml` + MinIO + Caddy)                                                                                                                  |
+| Master-key rotation                                                 | Working, smoke-tested (`KODY_MASTER_KEY_PREVIOUS` + `POST /admin/secrets/rekey`)                                                                                                              |
+| Limits, quotas, `usageGet`, admin audit log                         | Working, smoke-tested ([docs/operations.md](./docs/operations.md))                                                                                                                            |
+| AI chat/embeddings (Ollama, LM Studio, vLLM, OpenAI, OpenRouter, …) | Working, smoke-tested OpenAI-compatible adapters ([docs/ai.md](./docs/ai.md))                                                                                                                 |
+| Memories (`metaMemory*`) + semantic search                          | Working, smoke-tested: FTS5 + sqlite-vec built in, Qdrant adapter, optional LLM re-rank ([docs/ai.md](./docs/ai.md))                                                                          |
+| Blob storage (`blob*`, raw HTTP routes, signed links)               | Working, smoke-tested: celld R2 binding built in, direct S3 adapter ([docs/blobs.md](./docs/blobs.md))                                                                                        |
+| Browser rendering (content, screenshots, PDF)                       | Working, smoke-tested adapters: self-hosted browserless overlay or Cloudflare ([docs/browser.md](./docs/browser.md))                                                                          |
+| npm imports inside `execute`                                        | Working, smoke-tested: durable module cache, esm.sh or a self-hosted CDN overlay ([docs/npm.md](./docs/npm.md))                                                                               |
+| Email (inboxes, send/reply, subscriptions)                          | Working, smoke-tested: self-hosted SMTP `mail-bridge` overlay + Postmark/Mailgun/SendGrid/Resend/Cloudflare adapters ([docs/email.md](./docs/email.md))                                       |
+| Package inbound webhooks (mint/rotate, HMAC, replay, deliveries)    | Working, smoke-tested ([docs/webhooks.md](./docs/webhooks.md))                                                                                                                                |
+| OAuth integrations (`{{integration-token:…}}`)                      | Working, smoke-tested: bring-your-own OAuth app, PKCE connect, encrypted tokens, host-side refresh ([docs/integrations.md](./docs/integrations.md))                                           |
+| Provider-backed secrets (`{{secret/<provider>:…}}`)                 | Working, smoke-tested: vault packages run sealed, values injected only at the gateway ([docs/secret-providers.md](./docs/secret-providers.md))                                                |
+| MCP OAuth 2.1 authorization server (DCR + PKCE, refresh rotation)   | Working, smoke-tested: MCP clients connect with no token pasting ([docs/mcp-oauth.md](./docs/mcp-oauth.md))                                                                                   |
+| Sign-in + web UI (account pages, operator console)                  | Working, smoke-tested: password / invite / magic-link sign-in, tokens, clients, secrets, packages, jobs, runs, inbox ([docs/web-ui.md](./docs/web-ui.md))                                     |
+| Install packages from GitHub / URL, community catalog               | Working, smoke-tested: `packageInstall` with host allowlist + SSRF guard, per-install `/community` catalog ([docs/packages.md](./docs/packages.md), [docs/community.md](./docs/community.md)) |
 
 **New here? Start with [docs/getting-started.md](./docs/getting-started.md)** —
 it goes from zero to a running Kody in one Docker container (or a two-node
@@ -304,11 +304,13 @@ and every admin or state-changing user action lands in `GET /admin/audit`
 Memories (`metaMemoryVerify` → `metaMemoryUpsert` / `metaMemoryDelete`,
 `metaMemorySearch`, `metaMemoryGet`) are built in: a per-user SQLite cell with
 FTS5, so they work with no AI configured. Point `KODY_AI_*` at any
-OpenAI-compatible server (Ollama, LM Studio, vLLM, OpenRouter, OpenAI) or
-Anthropic and you get `kody.aiChat()`, `kody.aiEmbed()`, embedding-based memory
-recall and hybrid ranking in `search` — vectors live in sqlite-vec inside the
-cell by default, or in Qdrant (`KODY_VECTOR_PROVIDER=qdrant`);
-`KODY_SEARCH_RERANK=llm` adds a chat-model re-rank. Provider keys stay
+OpenAI-compatible server (Ollama, LM Studio, vLLM, OpenRouter, OpenAI) and you
+get `kody.aiChat()`, `kody.aiEmbed()`, embedding-based memory recall and hybrid
+ranking in `search` — vectors live in sqlite-vec inside the cell by default, or
+in Qdrant (`KODY_VECTOR_PROVIDER=qdrant`); `KODY_SEARCH_RERANK=llm` adds a
+chat-model re-rank. (`KODY_AI_PROVIDER=anthropic` was removed; see
+[#67](https://github.com/kentcdodds/kody-celld/pull/67) /
+[#63](https://github.com/kentcdodds/kody-celld/issues/63).) Provider keys stay
 operator-side and never reach sandboxed code.
 
 ```sh
