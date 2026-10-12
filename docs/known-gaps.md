@@ -144,10 +144,10 @@ roadmap is now shipped; the roadmap below is kept as the change log.
 [Package apps](./package-apps.md) are served, with these gaps:
 
 - **Client bundles.** `kody.app.client` is recorded but not built; apps are
-  server-rendered only.
-- **Assets.** `kody.app.assets` is validated and stored, but `/_assets/*` is
-  served in a follow-up PR, and text files only. Binary assets are not planned
-  yet (packages are UTF-8 only).
+  server-rendered only. `/_assets/__version.json` therefore answers 404
+  (hosted serves the current client module URL there).
+- **Binary assets.** `kody.app.assets` serves text files only; binary assets
+  are not planned yet (packages are UTF-8 only).
 - **Realtime.** No WebSockets or other realtime facets for apps.
 - **`packageAppFetch`** (calling an app from package code) does not exist.
 - **Same-site cookie tossing.** If `KODY_APP_BASE_URL` shares a registrable
