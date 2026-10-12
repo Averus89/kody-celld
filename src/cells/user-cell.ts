@@ -22,6 +22,7 @@ import {
 	type Quotas,
 } from '../lib/limits.ts'
 import {
+	manifestWarnings,
 	parsePackageManifest,
 	type PackageFiles,
 	type PackageManifest,
@@ -98,7 +99,7 @@ export type SavedPackage = {
 	updatedAt: string
 }
 
-export type PackageSummary = Omit<SavedPackage, 'files'> & { fileCount: number }
+export type PackageSummary = Omit<SavedPackage, 'files'> & { fileCount: number; warnings?: Array<string> }
 
 export type JobRecord = {
 	id: string
@@ -339,6 +340,7 @@ function storedManifest(json: string): PackageManifest {
 		webhooks: manifest.webhooks ?? [],
 		subscriptions: manifest.subscriptions ?? [],
 		secretProvider: manifest.secretProvider ?? null,
+		app: manifest.app ?? null,
 		dependencies: manifest.dependencies ?? {},
 		hidden: manifest.hidden === true,
 		keywords: manifest.keywords ?? [],
@@ -1001,6 +1003,7 @@ export class UserCell extends DurableObject<Env> {
 			createdAt: existing?.created_at ?? now,
 			updatedAt: now,
 			fileCount: Object.keys(files).length,
+			warnings: manifestWarnings(manifest),
 		}
 	}
 
@@ -1092,6 +1095,19 @@ export class UserCell extends DurableObject<Env> {
 				updatedAt: row.updated_at,
 				fileCount: countPackageFiles(this.ctx.storage.sql, row.name),
 			}))
+	}
+
+	/** `updated_at` per saved package name; names that are not saved are omitted. */
+	async packageStamps(names: Array<string>): Promise<Record<string, string>> {
+		if (names.length === 0) return {}
+		const marks = names.map(() => '?').join(', ')
+		const rows = this.ctx.storage.sql
+			.exec<{ name: string; updated_at: string }>(
+				`SELECT name, updated_at FROM packages WHERE name IN (${marks})`,
+				...names,
+			)
+			.toArray()
+		return Object.fromEntries(rows.map((row) => [row.name, row.updated_at]))
 	}
 
 	async packageGet(name: string): Promise<SavedPackage | null> {

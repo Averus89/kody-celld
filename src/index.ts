@@ -1,3 +1,7 @@
+import { isAppOriginHost, readAppConfig } from './apps/app-url.ts'
+import { appErrorPage } from './apps/pages.ts'
+import { handleAppOrigin } from './apps/handler.ts'
+import { handleAppsOpen, isAppsOpenRoute } from './apps/open.ts'
 import { aiConfigFromEnv, describeAiConfig } from './ai/config.ts'
 import { authenticateBearer, bearer, mcpUnauthorized, type Principal } from './auth/authenticate.ts'
 import { blobConfigFromEnv, describeBlobConfig } from './blobs/config.ts'
@@ -81,6 +85,7 @@ function isWebRoute(pathname: string) {
 		isAccountRoute(pathname) ||
 		isConsoleRoute(pathname) ||
 		isCommunityRoute(pathname) ||
+		isAppsOpenRoute(pathname) ||
 		pathname === '/oauth/authorize'
 	)
 }
@@ -475,6 +480,17 @@ export default {
 			const insecure = insecureConfigError(env, url)
 			if (insecure) return json({ error: 'insecure_configuration', problems: insecure }, 500)
 
+			const apps = readAppConfig(env)
+			if (apps?.ok && isAppOriginHost(apps.config, url)) {
+				try {
+					return await handleAppOrigin(request, env, ctx, url, apps.config)
+				} catch (error) {
+					// Never render Kody's own error page on an app host.
+					console.error('[kody-celld] app origin failed', error)
+					return appErrorPage(500, 'Something went wrong serving this app.', env.KODY_PUBLIC_URL.replace(/\/$/, ''))
+				}
+			}
+
 			if (url.pathname === '/' && wantsHtml(request)) {
 				return redirect((await readWebSession(request, env)) ? '/account' : '/signin')
 			}
@@ -484,6 +500,7 @@ export default {
 					version: KODY_CELLD_VERSION,
 					mcp: `${env.KODY_PUBLIC_URL}/mcp`,
 					ok: true,
+					apps: apps === null ? null : apps.ok ? apps.baseUrl : { error: apps.error },
 					time: new Date().toISOString(),
 				})
 			}
@@ -506,6 +523,7 @@ export default {
 			if (isAccountRoute(url.pathname)) return await handleAccount(request, env, url)
 			if (isConsoleRoute(url.pathname)) return await handleConsole(request, env, ctx, url)
 			if (isCommunityRoute(url.pathname)) return await handleCommunity(request, env, url)
+			if (isAppsOpenRoute(url.pathname)) return await handleAppsOpen(request, env, url)
 			if (url.pathname.startsWith('/blobs/')) return await handleSignedBlob(request, env, url)
 			if (url.pathname.startsWith('/webhooks/')) return await handleWebhookIngress(request, env, ctx, url)
 			if (url.pathname.startsWith('/email/inbound/')) return await handleEmailInbound(request, env, ctx, url)
