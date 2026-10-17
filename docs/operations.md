@@ -42,6 +42,42 @@ unchanged. Optional: `CELLD_DEV_FLAGS` is forwarded to the short deploy-step
 (default `600000`) caps how long the deploy step may take before failing
 loudly with a path to `/data/celld/dev/.last-deploy.log`.
 
+### LTX epoch retention (single node)
+
+Threshold compaction only folds L0 segments **within the current epoch**.
+Superseded epochs stay in the local store until celld's epoch GC runs, and that
+GC is off unless `CELLD_LTX_RETENTION_SECS` is positive (celld default: unset,
+no deletion). Without it, a long-lived single-node volume can keep hundreds of
+thousands of old-epoch L0 objects; every cold cell restore then spends most of
+its time in an unindexed full-table listing of the local store (celld
+`LocalStore::list` over `objects.sqlite3`).
+
+`single` mode therefore defaults `CELLD_LTX_RETENTION_SECS` to `86400` (one day
+of grace) when the variable is unset or empty. **This changes the default for
+existing single-mode installs on upgrade:** celld begins deleting eligible
+superseded epochs after the grace. Set `CELLD_LTX_RETENTION_SECS=0` to keep
+celld's previous no-deletion default.
+
+celld deletes only epoch prefixes that sit below the cell's restore-chain base
+and are proven unreachable by the owner GC plan (`denoland/celld`
+`crates/logic/epoch_gc.rs`): never the current owner epoch, never the epoch
+immediately before it, never the chain base or anything above it, and nothing
+while a paged cell still pins older objects. See `docker/epoch-gc-plan.test.mjs`
+for the locked predicates.
+
+There is no `CELLD_DURABILITY=single`. celld only accepts `fleet` or `bucket`
+and defaults to `fleet`. Docker `single` leaves that default alone, so the
+node_log maintenance tick (which calls `gc_superseded_epochs`) runs. Setting
+`CELLD_DURABILITY=bucket` with a positive retention fails startup loudly,
+because bucket durability never spawns that maintenance loop.
+
+After upgrading an already-large volume, leave the node running: cells must
+activate, finish any paged hydrate, and take a write before a pass can delete,
+and each pass deletes at most 64 epochs per cell. Cold-restore listing cost
+shrinks as superseded objects go away; an indexed prefix lookup in celld's
+local store is still the proper fix for large current-epoch stores and belongs
+upstream.
+
 ## Runtime limits
 
 | Variable                       | Default    | Range           | Effect                                                                                                                                                                                          |
