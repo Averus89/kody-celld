@@ -96,6 +96,52 @@ export async function smokeSecrets({ mcp, user }) {
 			gateway: injected.gateway.map((e) => e.outcome),
 		})
 
+		const multipart = await mcp.run(
+			`export default async function main({ url }) {
+  const image = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFElEQVR4nGP4TyJgGNUwqmH4agAAr639H708R/EAAAAASUVORK5CYII='), (c) => c.charCodeAt(0))
+  const form = new FormData()
+  form.append('filename', new Blob([image], { type: 'image/png' }), 'screenshot.png')
+  form.append('note', 'partial marker {{secret: is not a placeholder')
+  const request = new Request(url + '/multipart', {
+    method: 'POST', headers: { authorization: 'Bearer {{secret:smoke-token}}' }, body: form,
+  })
+  const digest = await crypto.subtle.digest('SHA-256', await request.clone().arrayBuffer())
+  const expectedBodyHash = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
+  const response = await fetch(request)
+  return { status: response.status, expectedBodyHash, received: await response.json() }
+}`,
+			{ url: echo.url },
+		)
+		assert(multipart.status === 200, 'multipart upload should reach the echo server', multipart)
+		assert(
+			multipart.received.bodySha256 === multipart.expectedBodyHash,
+			'multipart image bytes changed during header secret injection',
+			multipart,
+		)
+		assert(
+			multipart.received.authorizationSha256 === expectedHeaderHash,
+			'multipart authorization placeholder was not replaced',
+			multipart.received,
+		)
+		log('multipart image bytes preserved during header secret injection')
+
+		const bodySecret = await mcp.run(
+			`export default async function main({ url }) {
+  const response = await fetch(url + '/body-secret', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token: '{{secret:smoke-token}}' }),
+  })
+  return await response.json()
+}`,
+			{ url: echo.url },
+		)
+		assert(
+			bodySecret.bodySha256 === sha256(JSON.stringify({ token: secretValue })),
+			'JSON body placeholder must still be replaced',
+			bodySecret,
+		)
+		log('JSON body placeholder injected')
+
 		const runRecord = await mcp.call('runGet', { id: injected.runId })
 		assert(!JSON.stringify(runRecord).includes(secretValue), 'run history must never contain the secret value')
 

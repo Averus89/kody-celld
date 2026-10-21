@@ -300,15 +300,17 @@ export async function startEchoServer(port = Number(process.env.SMOKE_ECHO_PORT 
 	const bind = process.env.SMOKE_ECHO_BIND ?? (host === '127.0.0.1' ? '127.0.0.1' : '0.0.0.0')
 	const seen = []
 	const server = createServer(async (req, res) => {
-		let body = ''
-		for await (const chunk of req) body += chunk
+		const chunks = []
+		for await (const chunk of req) chunks.push(chunk)
+		const bodyBytes = Buffer.concat(chunks)
+		const body = bodyBytes.toString('utf8')
 		const authorization = req.headers.authorization ?? ''
 		const record = {
 			method: req.method,
 			url: req.url,
 			authorizationSha256: authorization ? sha256(authorization) : null,
 			authorizationLength: authorization.length,
-			bodySha256: body ? sha256(body) : null,
+			bodySha256: bodyBytes.length ? sha256(bodyBytes) : null,
 			bodyHadPlaceholder: body.includes('{{secret'),
 			headerHadPlaceholder: authorization.includes('{{secret'),
 		}
