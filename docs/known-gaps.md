@@ -64,9 +64,11 @@ roadmap is now shipped; the roadmap below is kept as the change log.
   once; an unpinned specifier is re-resolved when its cache entry expires.
 - **Installing from GitHub / URLs / kody.codes** downloads on the server: the
   host must be a built-in public source (GitHub hosts and `kody.codes`) or a
-  private/LAN host listed in `KODY_PRIVATE_HOSTS`, and the guard
-  checks hostnames, not resolved IPs — a public name pointing at a private
-  address is only stopped by your network. There is no signature/checksum
+  private/LAN host listed in `KODY_PRIVATE_HOSTS`. Every hop's hostname is
+  also resolved through `KODY_DNS_RESOLVER_URL` and private answers are
+  refused, but `fetch` resolves the name again when it connects, so a name
+  that changes its answer between the check and the connect is not excluded
+  ([kody-celld#45](https://github.com/kody-hq/kody-celld/issues/45)). There is no signature/checksum
   verification of what is downloaded. Public kody.codes packages are imported
   via read-only Git smart-HTTP on `…/@owner/leaf.git` (listing URLs rewrite to
   that); the HTML listing page is not an install API. Hosted upload-pack must
@@ -111,10 +113,13 @@ roadmap is now shipped; the roadmap below is kept as the change log.
   Inline `blobGet` stops at 5 MB (use `blobUrl`/`/api/blobs`); uploads are
   buffered in memory up to `KODY_BLOB_MAX_BYTES` (25 MiB default). Signed links
   are HMAC-based and tied to the master key: rotating it invalidates them.
-- **Browser rendering** is an operator-wide service, not per user, and the
-  SSRF guard checks the literal URL only (no DNS resolution): keep the browser
-  on an isolated network (as the compose overlay does) if untrusted users may
-  render arbitrary URLs. Browser requests bypass the secrets gateway by design.
+- **Browser rendering** is an operator-wide service, not per user. The SSRF
+  guard checks the supplied URL and resolves its hostname through
+  `KODY_DNS_RESOLVER_URL`, but it does not cover redirects, subresources,
+  `html` inputs or the browser's own DNS lookup ([browser.md](./browser.md)):
+  keep the browser on an isolated network (as the compose overlay does) if
+  untrusted users may render arbitrary URLs. Browser requests bypass the
+  secrets gateway by design.
 - **Email** is operator-configured per deployment (one domain, one outbound
   adapter); inbound authentication is the shared `KODY_EMAIL_INBOUND_TOKEN`, so keep the inbound routes behind
   TLS. The `mail-bridge` does not do spam filtering, DKIM signing or greylisting
