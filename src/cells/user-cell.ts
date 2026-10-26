@@ -1521,21 +1521,46 @@ export class UserCell extends DurableObject<Env> {
 		}
 	}
 
+	/**
+	 * Manual runs must not write `jobs.last_run_at` (that column anchors
+	 * interval/once rescheduling). Prefer the newer of the column and the
+	 * latest job_runs row so Last run stays in sync with last status after
+	 * Run now, including when a cron claim already set the column.
+	 */
+	private withLatestRunAt(job: JobRecord): JobRecord {
+		const latest = this.ctx.storage.sql
+			.exec<{ started_at: string }>(
+				'SELECT started_at FROM job_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT 1',
+				job.id,
+			)
+			.toArray()[0]
+		if (!latest) return job
+		if (!job.lastRunAt || latest.started_at > job.lastRunAt) {
+			return { ...job, lastRunAt: latest.started_at }
+		}
+		return job
+	}
+
 	async jobList(filter: { packageName?: string | undefined } = {}): Promise<Array<JobRecord>> {
 		const rows = filter.packageName
 			? this.ctx.storage.sql.exec('SELECT * FROM jobs WHERE package_name = ? ORDER BY id', filter.packageName)
 			: this.ctx.storage.sql.exec('SELECT * FROM jobs ORDER BY id')
-		return (rows.toArray() as Array<Parameters<UserCell['rowToJob']>[0]>).map((row) => this.rowToJob(row))
+		return (rows.toArray() as Array<Parameters<UserCell['rowToJob']>[0]>).map((row) =>
+			this.withLatestRunAt(this.rowToJob(row)),
+		)
 	}
 
 	async jobGet(id: string): Promise<JobRecord | null> {
 		const row = this.ctx.storage.sql.exec('SELECT * FROM jobs WHERE id = ?', id).toArray()[0]
-		return row ? this.rowToJob(row as Parameters<UserCell['rowToJob']>[0]) : null
+		return row ? this.withLatestRunAt(this.rowToJob(row as Parameters<UserCell['rowToJob']>[0])) : null
 	}
 
 	async jobUpdate(input: { id: string; enabled?: boolean | undefined }) {
-		const job = await this.jobGet(input.id)
-		if (!job) throw new KodyError('job_not_found', `Job "${input.id}" was not found.`, { status: 404 })
+		// Read the row directly: jobGet coalesces lastRunAt from job_runs for
+		// display, but resume must anchor on jobs.last_run_at only (cron claim).
+		const row = this.ctx.storage.sql.exec('SELECT * FROM jobs WHERE id = ?', input.id).toArray()[0]
+		if (!row) throw new KodyError('job_not_found', `Job "${input.id}" was not found.`, { status: 404 })
+		const job = this.rowToJob(row as Parameters<UserCell['rowToJob']>[0])
 		const now = new Date()
 		if (input.enabled !== undefined) {
 			const nextRun = input.enabled
