@@ -334,7 +334,7 @@ describe('runtime email helper', () => {
 		assert.deepEqual(capabilityCall, [
 			'emailMessageGet',
 			{ id: 'msg-1' },
-			{ runId: 'run-1', packageName: '@team/mail', eventDepth: 0 },
+			{ runId: 'run-1', packageName: '@team/mail', eventDepth: 0, computedImportDepth: 0 },
 		])
 		assert.deepEqual(result, {
 			id: 'msg-1',
@@ -413,7 +413,7 @@ describe('runtime email helper', () => {
 		assert.deepEqual(capabilityCall, [
 			'emailAttachmentGet',
 			{ attachmentId: 'att-1' },
-			{ runId: 'run-2', packageName: '@team/mail', eventDepth: 0 },
+			{ runId: 'run-2', packageName: '@team/mail', eventDepth: 0, computedImportDepth: 0 },
 		])
 		assert.deepEqual(result, {
 			id: 'att-1',
@@ -476,9 +476,13 @@ describe('runtime email helper', () => {
 					attachments: [{ filename: 'note.txt', contentBase64: 'bm90ZQ==' }],
 					headers: { 'x-test': 'value' },
 				},
-				{ runId: 'run-3', packageName: '@team/mail', eventDepth: 0 },
+				{ runId: 'run-3', packageName: '@team/mail', eventDepth: 0, computedImportDepth: 0 },
 			],
-			['emailReply', { id: 'msg-2', text: 'Again' }, { runId: 'run-4', packageName: '@team/mail', eventDepth: 0 }],
+			[
+				'emailReply',
+				{ id: 'msg-2', text: 'Again' },
+				{ runId: 'run-4', packageName: '@team/mail', eventDepth: 0, computedImportDepth: 0 },
+			],
 		])
 	})
 
@@ -522,8 +526,61 @@ describe('runtime module events', () => {
 			{
 				name: 'packageEventDispatch',
 				args: input,
-				context: { runId: 'run-1', packageName: '@scope/source', eventDepth: 3 },
+				context: { runId: 'run-1', packageName: '@scope/source', eventDepth: 3, computedImportDepth: 0 },
 			},
 		])
+	})
+
+	it('installs a computed package import bridge with the current call context', async () => {
+		const key = Symbol.for('kody.computedPackageImport')
+		const previous = Reflect.get(globalThis, key)
+		const calls: Array<{ name: string; args: unknown; context: unknown }> = []
+		try {
+			const runtime = await import(
+				`data:text/javascript;base64,${Buffer.from(RUNTIME_MODULE_SOURCE).toString('base64')}`
+			)
+			const initialize = Reflect.get(runtime, '__init') as (env: unknown) => void
+			const run = Reflect.get(runtime, '__run') as (
+				context: Record<string, unknown>,
+				callback: () => Promise<unknown>,
+			) => Promise<unknown>
+			initialize({
+				KODY: {
+					capability: async (name: string, args: unknown, context: unknown) => {
+						calls.push({ name, args, context })
+						return 4
+					},
+				},
+			})
+			const bridge = Reflect.get(globalThis, key) as (input: unknown) => Promise<unknown>
+			const input = { specifier: 'kody:@scope/pkg/compute', params: { n: 2 } }
+			const result = await run(
+				{
+					runId: 'run-1',
+					packageName: '@scope/source',
+					eventDepth: 2,
+					computedImportDepth: 3,
+					timeoutMs: 1200,
+				},
+				() => bridge(input),
+			)
+			assert.equal(result, 4)
+			assert.deepEqual(calls, [
+				{
+					name: 'packageComputedImport',
+					args: input,
+					context: {
+						runId: 'run-1',
+						packageName: '@scope/source',
+						eventDepth: 2,
+						computedImportDepth: 3,
+						timeoutMs: 1200,
+					},
+				},
+			])
+		} finally {
+			if (previous === undefined) Reflect.deleteProperty(globalThis, key)
+			else Reflect.set(globalThis, key, previous)
+		}
 	})
 })
