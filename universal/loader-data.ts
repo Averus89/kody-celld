@@ -51,6 +51,7 @@ export type SecretView = {
 	packageName: string | null
 	description: string | null
 	updatedAt: string
+	allowedPackages: Array<string>
 }
 
 export type SecretHostView = {
@@ -445,6 +446,14 @@ export type AppLoaderData =
 			hosts: Array<SecretHostView>
 	  }
 	| {
+			page: 'accountSecretApprove'
+			csrf: string
+			name: string
+			packageName: string
+			allowedPackages: Array<string>
+			alreadyGranted: boolean
+	  }
+	| {
 			page: 'accountPackages'
 			csrf: string
 			packages: Array<PackageView>
@@ -666,6 +675,7 @@ export function pageHasAccountRail(page: AppPage): boolean {
 		case 'accountApiTokens':
 		case 'accountWorkflows':
 		case 'accountSecrets':
+		case 'accountSecretApprove':
 		case 'accountPackages':
 		case 'accountJobs':
 		case 'accountJobDetail':
