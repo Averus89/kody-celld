@@ -194,6 +194,12 @@ roadmap is now shipped; the roadmap below is kept as the change log.
   lists. Celld does not support credential `inject` or `sign()`. Declared
   `url`, `login`, and `signing` slots fail with `credential_unsupported`.
   Imported package code resolves credentials as the package being run.
+- **Hosted HTTP API.** celld serves `/v1` at the origin of `KODY_PUBLIC_URL`,
+  not on a separate `api.` host. `/openapi.json` lists that origin in its
+  `servers` array. Memories and secrets routes, token routes,
+  `/v1/search/tool`, capability proxy and local-execute, repos, webhooks,
+  email, integrations, MCP servers, community, and storage routes are deferred
+  to follow-up PRs.
 - **Package subscriptions and manifest keys.** Celld emits only
   `email.message.received`, `email.message.quarantined`,
   `email.message.delivery.updated`, `integration.auth.succeeded`, and
