@@ -56,8 +56,40 @@ Celld emits `email.message.received`, `email.message.quarantined`,
 `email.message.delivery.updated`, `integration.auth.succeeded`, and
 `integration.auth.failed`. Other non-empty topic strings are saved with a
 warning, but no celld event triggers them. Subscription handlers must still
-name an uploaded file. `filters` are not applied and produce a warning; the
-handler is saved and runs for every event on that topic.
+name an uploaded file. `filters` on platform topics are not applied and produce
+a warning. Filters on package-emitted topics are retained without a warning,
+but those handlers are not delivered events yet.
+
+## Emitted topics (`kody.emits`)
+
+Declare emitted event topics in `kody.emits`. Topics must use the scoped form
+`@scope/topic.name`, with a lower-dot-case body and the same scope as the
+package name. Each entry requires a description and can include a JSON Schema
+subset payload schema with root `"type": "object"`.
+
+```json
+{
+  "name": "@example/tasks",
+  "kody": {
+    "emits": {
+      "@example/task.created": {
+        "description": "A task was created.",
+        "payloadSchema": {
+          "type": "object",
+          "properties": {
+            "taskId": { "type": "string" }
+          },
+          "required": ["taskId"]
+        }
+      }
+    }
+  }
+}
+```
+
+Celld parses and validates these declarations, but `events.dispatch` and
+delivery to subscriber handlers are not available yet. The `mcp: true` flag is
+ignored with a warning. Unsupported entry fields are warned about and dropped.
 
 ## Credential slots
 
@@ -80,8 +112,8 @@ hyphens. Each slot requires a description from 1 to 500 characters.
 ```
 
 `kind` is optional and accepts `secret`, `oauth`, `mcp`, `url`, `login`, or
-`signing`. `provider` is optional, trimmed to 1-64 characters, and defaults to
-the slot name. `multiple` is an optional boolean. Celld warns and drops unknown
+`signing`. `provider` is optional. When present, celld trims surrounding whitespace and requires 1-64 characters; it rejects longer values instead of truncating them. Celld does not
+default it to the slot name. `multiple` is an optional boolean. Celld warns and drops unknown
 slot fields, `placement`, and `ownerCredentialForVisitors`.
 
 ## Credential runtime
@@ -98,7 +130,7 @@ sent. The client-side host check is defense in depth only. The runtime does
 not expose `sign()`. Manifest-only `url`, `login`, and `signing` slots fail with
 `credential_unsupported` when opened.
 
-### TypeScript and JSX
+## TypeScript and JSX
 
 `.ts`, `.mts`, `.tsx` and `.jsx` package files are compiled when they run, as hosted kody does with esbuild; here it's sucrase. Ad hoc `execute` code is read as TypeScript. Package files are stored exactly as written. Types are removed, not checked.
 
