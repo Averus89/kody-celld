@@ -3,6 +3,7 @@ import { describe, it } from 'node:test'
 import {
 	contentSecurityPolicyWithFormAction,
 	firstPartySecurityHeaders,
+	formActionSourceForRedirect,
 	pageResponseHeaders,
 } from './security-headers.ts'
 
@@ -27,15 +28,52 @@ describe('contentSecurityPolicyWithFormAction', () => {
 		assert.equal(contentSecurityPolicyWithFormAction([]), base)
 	})
 
+	it('accepts a scheme source for a private-use redirect scheme', () => {
+		assert.equal(
+			directive(contentSecurityPolicyWithFormAction(['alice:']), 'form-action'),
+			"form-action 'self' https: http://localhost:* http://127.0.0.1:* alice:",
+		)
+	})
+
 	it('refuses anything that is not a bare http(s) origin', () => {
 		for (const bad of [
 			"'unsafe-inline'",
 			'http://a.example/path',
 			'javascript:alert(1)',
 			'http://a.example; script-src *',
+			'javascript:',
+			'data:',
 		]) {
 			assert.throws(() => contentSecurityPolicyWithFormAction([bad]))
 		}
+	})
+})
+
+describe('formActionSourceForRedirect', () => {
+	it('needs nothing extra for https and the default loopback hosts', () => {
+		for (const uri of [
+			'https://claude.ai/api/mcp/auth_callback',
+			'http://localhost:6274/cb',
+			'http://127.0.0.1:8123/cb',
+		]) {
+			assert.equal(formActionSourceForRedirect(uri), null)
+		}
+	})
+
+	it('gives the scheme of a private-use redirect and the origin of other loopback hosts', () => {
+		assert.equal(
+			formActionSourceForRedirect('alice://oauth/callback'),
+			'alice:',
+		)
+		assert.equal(
+			formActionSourceForRedirect('com.example.app:/cb'),
+			'com.example.app:',
+		)
+		assert.equal(
+			formActionSourceForRedirect('http://app.localhost:3000/cb'),
+			'http://app.localhost:3000',
+		)
+		assert.equal(formActionSourceForRedirect('http://[::1]:3000/cb'), 'http:')
 	})
 })
 

@@ -40,11 +40,17 @@ function buildContentSecurityPolicy(formActionDirective: string) {
 
 const contentSecurityPolicy = buildContentSecurityPolicy(formAction)
 
-/** The first-party CSP with `origins` (bare http(s) origins only) added to `form-action`. */
+/** The first-party CSP with `origins` (bare http(s) origins or scheme sources like `alice:`) added to `form-action`. */
 export function contentSecurityPolicyWithFormAction(
 	origins: Array<string>,
 ): string {
 	for (const origin of origins) {
+		if (
+			/^[a-z][a-z0-9+.-]*:$/.test(origin) &&
+			origin !== 'javascript:' &&
+			origin !== 'data:'
+		)
+			continue
 		let parsed: URL | null = null
 		try {
 			parsed = new URL(origin)
@@ -64,6 +70,29 @@ export function contentSecurityPolicyWithFormAction(
 	return origins.length
 		? buildContentSecurityPolicy(`${formAction} ${origins.join(' ')}`)
 		: contentSecurityPolicy
+}
+
+/**
+ * The form-action source an OAuth consent page needs so Approve / Deny can
+ * redirect to `redirectUri`, or null when the base policy already allows it.
+ * Private-use schemes (`alice://`, `cursor://`) give their scheme; other http
+ * loopback hosts (`*.localhost`) their origin. CSP host-source cannot name an
+ * IPv6 literal, so `http://[::1]` gives `http:` for that one page.
+ */
+export function formActionSourceForRedirect(
+	redirectUri: string,
+): string | null {
+	const url = new URL(redirectUri)
+	if (url.protocol === 'https:') return null
+	if (url.protocol === 'http:') {
+		if (url.hostname === 'localhost' || url.hostname === '127.0.0.1')
+			return null
+		return url.hostname.startsWith('[') ? 'http:' : url.origin
+	}
+	if (!/^[a-z][a-z0-9+.-]*:$/.test(url.protocol)) {
+		throw new Error(`form-action scheme is not valid, got "${url.protocol}".`)
+	}
+	return url.protocol
 }
 
 export const firstPartySecurityHeaders: Readonly<Record<string, string>> = {

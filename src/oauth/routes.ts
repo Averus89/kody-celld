@@ -6,6 +6,7 @@ import { recordAudit } from '../lib/audit.ts'
 import { mcpClientMetadataPath } from '../mcp-client/oauth.ts'
 import { cliClientId, cliClientMetadataPath, cliClientMetadataResponse } from './cli-client-metadata.ts'
 import { renderPage } from '#app/render.tsx'
+import { contentSecurityPolicyWithFormAction, formActionSourceForRedirect } from '#app/security-headers.ts'
 import { clientMetadataResponse } from './client-metadata.ts'
 import { appSessionOf, readForm, redirect } from '../web/http.ts'
 import { assertCsrf, readWebSession } from '../web/session.ts'
@@ -196,10 +197,15 @@ async function handleAuthorize(request: Request, env: Env, url: URL) {
 
 	if (request.method === 'GET') {
 		const q = params.toString()
+		// Approve / Deny redirect to the client: a private-use scheme or non-default loopback host must be in form-action.
+		const formActionSource = formActionSourceForRedirect(authorize.redirectUri)
 		return renderPage({
 			title: `Connect ${client.clientName}`,
 			pathname: oauthPaths.authorize,
 			session: appSessionOf(session),
+			...(formActionSource
+				? { headers: { 'content-security-policy': contentSecurityPolicyWithFormAction([formActionSource]) } }
+				: {}),
 			data: {
 				page: 'oauthAuthorize',
 				clientName: client.clientName,
