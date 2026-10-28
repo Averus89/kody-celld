@@ -6,7 +6,7 @@ import { recordAudit } from '../lib/audit.ts'
 import { mcpClientMetadataPath } from '../mcp-client/oauth.ts'
 import { cliClientId, cliClientMetadataPath, cliClientMetadataResponse } from './cli-client-metadata.ts'
 import { renderPage } from '#app/render.tsx'
-import { contentSecurityPolicyWithFormAction, formActionSourceForRedirect } from '#app/security-headers.ts'
+import { contentSecurityPolicyWithFormAction } from '#app/security-headers.ts'
 import { clientMetadataResponse } from './client-metadata.ts'
 import { appSessionOf, readForm, redirect } from '../web/http.ts'
 import { assertCsrf, readWebSession } from '../web/session.ts'
@@ -140,6 +140,23 @@ async function handleRegister(request: Request, env: Env) {
 // --------------------------------------------------------------- authorize
 
 /** Errors before the redirect URI is validated must not redirect (open-redirect guard). */
+/**
+ * The form-action source the consent page needs so Approve / Deny can redirect
+ * to `redirectUri`, or null when the base policy already allows it.
+ * Private-use schemes (`alice://`, `cursor://`) give their scheme; other http
+ * loopback hosts (`*.localhost`) their origin. CSP host-source cannot name an
+ * IPv6 literal, so `http://[::1]` gives `http:` for that one page.
+ */
+function consentFormActionSource(redirectUri: string): string | null {
+	const url = new URL(redirectUri)
+	if (url.protocol === 'https:') return null
+	if (url.protocol === 'http:') {
+		if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') return null
+		return url.hostname.startsWith('[') ? 'http:' : url.origin
+	}
+	return url.protocol
+}
+
 function authorizeErrorPage(error: unknown) {
 	const { body, status } = oauthErrorBody(error)
 	return renderPage({
@@ -198,7 +215,7 @@ async function handleAuthorize(request: Request, env: Env, url: URL) {
 	if (request.method === 'GET') {
 		const q = params.toString()
 		// Approve / Deny redirect to the client: a private-use scheme or non-default loopback host must be in form-action.
-		const formActionSource = formActionSourceForRedirect(authorize.redirectUri)
+		const formActionSource = consentFormActionSource(authorize.redirectUri)
 		return renderPage({
 			title: `Connect ${client.clientName}`,
 			pathname: oauthPaths.authorize,

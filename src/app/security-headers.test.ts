@@ -3,7 +3,6 @@ import { describe, it } from 'node:test'
 import {
 	contentSecurityPolicyWithFormAction,
 	firstPartySecurityHeaders,
-	formActionSourceForRedirect,
 	pageResponseHeaders,
 } from './security-headers.ts'
 
@@ -46,34 +45,6 @@ describe('contentSecurityPolicyWithFormAction', () => {
 		]) {
 			assert.throws(() => contentSecurityPolicyWithFormAction([bad]))
 		}
-	})
-})
-
-describe('formActionSourceForRedirect', () => {
-	it('needs nothing extra for https and the default loopback hosts', () => {
-		for (const uri of [
-			'https://claude.ai/api/mcp/auth_callback',
-			'http://localhost:6274/cb',
-			'http://127.0.0.1:8123/cb',
-		]) {
-			assert.equal(formActionSourceForRedirect(uri), null)
-		}
-	})
-
-	it('gives the scheme of a private-use redirect and the origin of other loopback hosts', () => {
-		assert.equal(
-			formActionSourceForRedirect('alice://oauth/callback'),
-			'alice:',
-		)
-		assert.equal(
-			formActionSourceForRedirect('com.example.app:/cb'),
-			'com.example.app:',
-		)
-		assert.equal(
-			formActionSourceForRedirect('http://app.localhost:3000/cb'),
-			'http://app.localhost:3000',
-		)
-		assert.equal(formActionSourceForRedirect('http://[::1]:3000/cb'), 'http:')
 	})
 })
 

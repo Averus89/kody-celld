@@ -267,6 +267,29 @@ export async function smokeOAuthServer({ user, mcp }) {
 	// Tampering with the signed consent state is refused.
 	const consent = await browser.get(`/oauth/authorize?${new URLSearchParams(authParams)}`)
 	assert(consent.status === 200 && consent.text.includes('Smoke MCP Host'), 'consent page names the client')
+	const formAction = (response) =>
+		response.headers
+			.get('content-security-policy')
+			?.split('; ')
+			.find((d) => d.startsWith('form-action ')) ?? ''
+	assert(
+		formAction(consent) === "form-action 'self' https: http://localhost:* http://127.0.0.1:*",
+		'loopback consent keeps the default form-action',
+		formAction(consent),
+	)
+	// Approve / Deny redirect to a private-use scheme: the browser blocks it unless form-action lists the scheme.
+	const nativeConsent = await browser.get(
+		`/oauth/authorize?${new URLSearchParams({
+			...authParams,
+			client_id: customScheme.json.client_id,
+			redirect_uri: 'com.example.app:/oauth',
+		})}`,
+	)
+	assert(
+		nativeConsent.status === 200 && formAction(nativeConsent).endsWith(' com.example.app:'),
+		'private-use scheme consent allows its scheme in form-action',
+		{ status: nativeConsent.status, formAction: formAction(nativeConsent) },
+	)
 	const hidden = hiddenInputs(consent.text)
 	const tamperedQ = hidden.q.replace(
 		encodeURIComponent(`http://127.0.0.1:${port}/callback`),
