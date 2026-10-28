@@ -144,15 +144,18 @@ async function handleRegister(request: Request, env: Env) {
  * The form-action source the consent page needs so Approve / Deny can redirect
  * to `redirectUri`, or null when the base policy already allows it.
  * Private-use schemes (`alice://`, `cursor://`) give their scheme; other http
- * loopback hosts (`*.localhost`) their origin. CSP host-source cannot name an
- * IPv6 literal, so `http://[::1]` gives `http:` for that one page.
+ * loopback hosts (`*.localhost`) their origin. CSP host-source labels allow only
+ * letters, digits and "-", so a host such as `client_app.localhost` gives
+ * `http://*.localhost:<port>`, and an IPv6 literal (`http://[::1]`) gives `http:`
+ * for that one page.
  */
 function consentFormActionSource(redirectUri: string): string | null {
 	const url = new URL(redirectUri)
 	if (url.protocol === 'https:') return null
 	if (url.protocol === 'http:') {
 		if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') return null
-		return url.hostname.startsWith('[') ? 'http:' : url.origin
+		if (url.hostname.startsWith('[')) return 'http:'
+		return /^[a-z0-9.-]+$/.test(url.hostname) ? url.origin : `http://*.localhost${url.port ? `:${url.port}` : ''}`
 	}
 	return url.protocol
 }
